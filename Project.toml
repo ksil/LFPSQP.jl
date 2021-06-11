@@ -1,0 +1,9 @@
+name = "LFPSQP"
+uuid = "213b899a-c0a5-4fcf-934b-81c0c35eb21a"
+authors = ["Kevin Silmore <ksil@users.noreply.github.com>"]
+version = "0.1.0"
+
+[deps]
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+Parameters = "d96e819e-fc66-5662-9728-84c9c7592b0a"
+ReverseDiff = "37e2e3b7-166d-5795-8a7a-e32c996b4267"
