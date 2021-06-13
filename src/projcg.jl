@@ -38,7 +38,7 @@ i - number of iterations taken
 nr - final tolerance achieved for projected residual, (I - U*U')*(A*x - b)
 =#
 function projcg!(x, λ, A, U, b, c;
-    tol::Float64=1e-6, maxit::Int=length(b)+length(c), work::ProjCGWork=ProjCGWork(length(b), length(c)))
+    tol::Float64=1e-6, maxit::Int=length(b)+length(c), work::ProjCGWork{T}=ProjCGWork(length(b), length(c))) where T
 
 n = length(b)
 m = length(c)
