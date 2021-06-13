@@ -18,9 +18,6 @@ end
     return true
 end
 
-include("la_helper.jl")
-include("newton_direction.jl")
-
 @enum DisplayOption begin
     off
     iter

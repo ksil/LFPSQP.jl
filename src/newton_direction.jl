@@ -5,7 +5,6 @@ using ForwardDiff
 using ForwardDiff: Dual
 using LinearAlgebra
 using LinearAlgebra.BLAS: gemv!
-include("la_helper.jl")
 
 struct NewtonWork
 	duals_n::Vector{Dual{nothing,Float64,1}}
