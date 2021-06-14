@@ -10,9 +10,10 @@ using Printf
 using Random: randn!
 
 # include files
+include("projcg.jl")
+include("autodiff_generators.jl")
 # include("la_helper.jl")
 # include("newton_direction.jl")
 # include("constrained_descent.jl")
-include("projcg.jl")
 
 end # module

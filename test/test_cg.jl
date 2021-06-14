@@ -1,4 +1,4 @@
-@testset verbose=true "Projected CG           " begin
+@testset verbose=true "Projected CG                " begin
 	n = 1000
 	m = 10
 	

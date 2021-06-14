@@ -315,7 +315,7 @@ function constrained_descent(f, grad!, c!, jac!, dual_f!, dual_c!, x0::Vector{Fl
 				tmp_m[j] = 0.0
 			end
 
-			gemv!('T', -1.0, Vt, tmp_m, 0.0, λ_kkt) # λ = V Σ^{-1} U' g
+			gemv!('T', 1.0, Vt, tmp_m, 0.0, λ_kkt) # λ = -V Σ^{-1} U' g
 		end
 
 		# -------------------- Check for termination conditions --------------
@@ -720,7 +720,7 @@ function constrained_descent(f, grad!, c!, jac!, dual_f!, dual_c!, x0::Vector{Fl
 
 		@label END_LINESEARCH
 
-		# update x and function values
+		# ----------------------- update x and function values ---------------------------
 		x .= xnew
 		fval = newf
 		append!(obj_values, fval)
