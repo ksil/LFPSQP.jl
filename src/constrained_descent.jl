@@ -99,7 +99,6 @@ function constrained_descent(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float
 	x0 - initial guess
 	m - number of constraints
 	p - algorithmic parameters in a struct DescentParams
-	CHUNKSIZE - chunk size to use during automatic differentiation
 
 	OUTPUT
 	x - the point to which the algorithm converged
@@ -267,7 +266,7 @@ function constrained_descent(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float
 			end
 		end
 
-		
+
 
 		newf = fval
 		flag = 0
@@ -276,7 +275,7 @@ function constrained_descent(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float
 		pcg_iter = 0
 		mtype = 0
 
-		if p.linesearch == exact
+		if p.linesearch == exact && !p.disable_linesearch
 			@goto EXACT_LINESEARCH
 		end
 
@@ -679,8 +678,8 @@ end
 # ====================== HELPER FXNS ================================
 
 function NR!(c!, cval, xtilde, xnew, U, S, Vt, D, tmp_m, tmp_m2, dc, tol, maxiter)
-	#= performs Newton Raphson for c(xtilde + U d) using the Jacobian V Σ'
-	which is evaluated at xtilde
+	#= performs Newton-Raphson retraction for c(xtilde + U d) using the Jacobian V Σ'
+	which is evaluated at x
 
 	INPUT
 	c! - constraint function of the form c!(cval, x) where y is overwritten
