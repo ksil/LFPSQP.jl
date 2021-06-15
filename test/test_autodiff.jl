@@ -118,7 +118,7 @@
 	grad_dual! = LFPSQP.generate_gradient(f, x0dual)
 	jac_dual! = LFPSQP.generate_jacobian(c!, x0dual, m)
 
-	hess_lag_vec! = LFPSQP.generate_hess_lag_vec(grad_dual!, jac_dual!, x0, m::Int)
+	hess_lag_vec! = LFPSQP.generate_hess_lag_vec(grad_dual!, jac_dual!, x0, m)
 
 	# try a few different products
 	@testset "Hessian-vector product" begin

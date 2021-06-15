@@ -1,11 +1,4 @@
-using ForwardDiff
-using ForwardDiff: GradientConfig, JacobianConfig, Chunk, Dual, Tag
-using ReverseDiff
-using LinearAlgebra
-using LinearAlgebra.BLAS: gemv!, axpy!, ger!
-using Parameters
-using Printf
-using Random: randn!
+import Base.show
 
 # redifine tags to avoid errors
 # NOTE that this may break nested differentation, but I don't believe this can be the case
@@ -44,6 +37,9 @@ struct TerminationInfo
 	iter::Int64
 end
 
+Base.show(io::IO, ti::TerminationInfo) = print(io, "TerminationInfo:\ncondition = $(ti.condition)\n" * 
+	"       Δf = $(ti.f_diff)\n   ||Δx|| = $(ti.step_diff)\n||P(∇f)|| = $(ti.kkt_diff)\n    iters = $(ti.iter)")
+
 @with_kw struct DescentParams
 	α::Float64 = 1.0
 	β::Float64 = 0.0
@@ -66,120 +62,32 @@ end
 	linesearch::LinesearchOption = armijo
 	armijo_period::Int64 = 100
 	do_newton::Bool = true
-	gmres_maxiter::Int64 = 10000
-	gmres_κ::Float64 = 0.5
+	tn_maxiter::Int64 = 10000
+	tn_κ::Float64 = 0.5
 end
 
-function constrained_descent(f, f_grad, c!, c_grad!, x0::Vector{Float64}, m::Int64, p::DescentParams)
-	#= does constrained descent using reverse AD, but uses the functions *_for_grad
-	if, say, f and c! need to be rewritten to not include external storage
-	=#
 
-	# gradient
-	cfg_f = ReverseDiff.GradientConfig(x0)
-	tape_f = ReverseDiff.GradientTape(f_grad, x0, cfg_f)
-	ctape_f = ReverseDiff.compile(tape_f)
-
-	function grad!(g, x)
-		ReverseDiff.gradient!(g, ctape_f, x)
-	end
-
-	if m > 0 
-		# jacobian
-		tmp_m = zeros(m)
-		cfg_c = ReverseDiff.JacobianConfig(tmp_m, x0)
-		tape_c = ReverseDiff.JacobianTape(c_grad!, tmp_m, x0, cfg_c)
-		ctape_c = ReverseDiff.compile(tape_c)
-
-		function jac!(Jc, cval, x)
-			ReverseDiff.jacobian!(Jc, ctape_c, x)
-			c!(cval, x)
-		end
-	else
-		jac! = nothing
-	end
-
-	if p.do_newton
-		dual_f!, dual_c! = generate_dual_grad(f_grad, c_grad!, x0, m)
-	else
-		dual_f! = nothing
-		dual_c! = nothing
-	end
-
-	constrained_descent(f, grad!, c!, jac!, dual_f!, dual_c!, x0, m, p::DescentParams)
-end
 
 function constrained_descent(f, c!, x0::Vector{Float64}, m::Int64, p::DescentParams)
-	constrained_descent(f, f, c!, c!, x0::Vector{Float64}, m::Int64, p::DescentParams)
-end
 
-function constrained_descent_forward(f, c!, x0, m, p::DescentParams, ::Val{CHUNKSIZE}=Val(min(8,length(x0)))) where CHUNKSIZE
-	cfg_f = GradientConfig(nothing, x0, Chunk{CHUNKSIZE}())
-	grad!(g, x) = ForwardDiff.gradient!(g, f, x, cfg_f)
+	# generate first-order functions
+	grad! = generate_gradient(f, x0)
+	jac! = (m == 0) ? nothing : generate_jacobian(c!, x0, m)
 
-	if m > 0
-		cfg_c = JacobianConfig(nothing, zeros(m), x0, Chunk{CHUNKSIZE}())
-		jac!(Jc, cval, x) = ForwardDiff.jacobian!(Jc, c!, cval, x, cfg_c)
-	else
-		jac! = nothing
-	end
+	# generate Lagrangian Hessian function
+	x0dual = zeros(Dual{nothing,Float64,1}, length(x0))
+	x0dual .= x0
 
-	if p.do_newton
-		dual_f!, dual_c! = generate_dual_grad(f_grad, c_grad!, x0, m)
-	else
-		dual_f! = nothing
-		dual_c! = nothing
-	end
+	grad_dual! = generate_gradient(f, x0dual)
+	jac_dual! = (m == 0) ? nothing : generate_jacobian(c!, x0dual, m)
 
-	constrained_descent(f, grad!, c!, jac!, dual_f!, dual_c!, x0, m, p::DescentParams)
-end
+	hess_lag_vec! = generate_hess_lag_vec(grad_dual!, jac_dual!, x0, m)
 
-function generate_dual_grad(f, c!, x0, m)
-	#= generates the function that calulcates Hessian vector products for Newton iteration
-
-	INPUTS
-	f - objective function f(x) -> val
-	c! - constraint function c!(cval, x)
-	x0 - the initial x condition
-	m - number of constraints
-
-	OUTPUT
-	dual_f! - calculates the gradient of f on dual inputs
-	dual_c! - calculates the jacobian of c on dual inputs
-
-	=#
-
-	n = length(x0)
-
-	tmp_duals_n = zeros(Dual{nothing,Float64,1}, n)
-	tmp_duals_n .= x0
-	tmp_duals_m = zeros(Dual{nothing,Float64,1}, m)
-
-	cfg_f = ReverseDiff.GradientConfig(tmp_duals_n)
-	tape_f = ReverseDiff.GradientTape(f, tmp_duals_n, cfg_f)
-	ctape_f = ReverseDiff.compile(tape_f)
-
-	function dual_f!(dest, src)
-		ReverseDiff.gradient!(dest, ctape_f, src)
-	end
-
-	if m > 0
-		cfg_c = ReverseDiff.JacobianConfig(tmp_duals_m, tmp_duals_n)
-		tape_c = ReverseDiff.JacobianTape(c!, tmp_duals_m, tmp_duals_n, cfg_c)
-		ctape_c = ReverseDiff.compile(tape_c)
-
-		function dual_c!(dest, src)
-			ReverseDiff.jacobian!(dest, ctape_c, src)
-		end
-	else
-		dual_c! = nothing
-	end
-
-	return dual_f!, dual_c!
+	constrained_descent(f, grad!, c!, jac!, hess_lag_vec!, x0, m, p)
 end
 
 
-function constrained_descent(f, grad!, c!, jac!, dual_f!, dual_c!, x0::Vector{Float64}, m::Int64, p::DescentParams)
+function constrained_descent(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int64, p::DescentParams)
 	#= perform constrained optimization of the Helfrich energy
 
 	INPUT
@@ -187,8 +95,7 @@ function constrained_descent(f, grad!, c!, jac!, dual_f!, dual_c!, x0::Vector{Fl
 	grad! - gradient of objective function, called as grad!(g, x)
 	c! - constraint function, called as c!(cval, x)
 	jac! - jacobian of constraint function, called as jac!(Jc, cval, x)
-	dual_f! - function to compute Hessian vector product of f
-	dual_c! - function to compute Hessian vector product of the constraints, c
+	hess_lag_vec! - function to calculate the action of the Lagrangian Hessian
 	x0 - initial guess
 	m - number of constraints
 	p - algorithmic parameters in a struct DescentParams
@@ -207,7 +114,7 @@ function constrained_descent(f, grad!, c!, jac!, dual_f!, dual_c!, x0::Vector{Fl
 	obj_values = zeros(0)
 	n = length(x0)
 
-	# ---------- set up storage -----------------
+	# ---------- storage for steps -----------------
 	xtilde = similar(x)					# temporary step
 	xnew = similar(x)
 	Jc = Array{Float64}(undef, m, n) 	# Jacobian of constraints
@@ -215,10 +122,8 @@ function constrained_descent(f, grad!, c!, jac!, dual_f!, dual_c!, x0::Vector{Fl
 	D = Array{Float64}(undef, m, m)
 	g = Array{Float64}(undef, n)		# gradient of objective function
 	d = Array{Float64}(undef, n)		# step to take
-	newton_sol = Array{Float64}(undef, n+m)
-	@inbounds newton_sol_d = view(newton_sol, 1:n)
-	newton_b = zeros(n+m)
 	dx = Array{Float64}(undef, n)
+
 	tmp_n = Array{Float64}(undef, n)	# temp vectors
 	tmp_n2 = Array{Float64}(undef, n)
 	tmp_n3 = Array{Float64}(undef, n)
@@ -228,6 +133,7 @@ function constrained_descent(f, grad!, c!, jac!, dual_f!, dual_c!, x0::Vector{Fl
 	tmp_m = Array{Float64}(undef, m)	# temp vector to do projection
 	tmp_m2 = Array{Float64}(undef, m)
 	tmp_m3 = Array{Float64}(undef, m)
+	
 	cval = zeros(m)						# to store constraint values
 	λ_kkt = zeros(m)
 	term_cond::TerminationCondition = f_tol
@@ -238,12 +144,17 @@ function constrained_descent(f, grad!, c!, jac!, dual_f!, dual_c!, x0::Vector{Fl
 	Vt = Array{Float64}(undef, m, m)
 	svdwork = Vector{Float64}(undef, 1)
 
-	# work struct for truncated Newton steps
-	nw = NewtonWork(n, m, x, λ_kkt, dual_f!, dual_c!, U, p.gmres_maxiter, p.gmres_κ)
-
 	if m > 0
 		ksvd!(Jct,U,S,Vt,svdwork,true)		# calculate work vector
 	end
+
+	newton_d = Array{Float64}(undef, n)				# truncated Newton steps
+	newton_Δλ = Array{Float64}(undef, m)
+	newton_b2 = zeros(m)
+	projcgwork = ProjCGWork(n, m)
+	prev_grad_norm = 0.0					# forces tol to be κ*grad_norm initially
+	grad_norm = Inf
+	newton_map = LinearMap{Float64}((dest, src) -> hess_lag_vec!(dest, src, x, λ_kkt), n, ismutating=true, issymmetric=true)
 
 	# ----------------------- Calculate gradient -------------------------
 	i = 0
@@ -251,9 +162,6 @@ function constrained_descent(f, grad!, c!, jac!, dual_f!, dual_c!, x0::Vector{Fl
 	step_diff = Inf
 	kkt_diff = Inf
 	α = p.α
-
-	failed_newton = 0
-	can_do_newton_after = 0
 
 	fval = f(x)
 	append!(obj_values, fval)
@@ -302,8 +210,8 @@ function constrained_descent(f, grad!, c!, jac!, dual_f!, dual_c!, x0::Vector{Fl
 
 
 		steptype = 0
-		gmres_iter = 0
-		gmres_res = 0.0
+		tn_iter = 0
+		tn_res = 0.0
 
 		# calculate λ_kkt
 		if m > 0
@@ -337,32 +245,29 @@ function constrained_descent(f, grad!, c!, jac!, dual_f!, dual_c!, x0::Vector{Fl
 
 		# -------------------- Truncated Newton step -------------------------
 
-		if p.do_newton && i >= can_do_newton_after
-			# take truncated Newton step
-			newton_b[1:n] .= d # the rest of the entries are 0.0
-			gmres_iter, gmres_res = newton_direction!(newton_sol, newton_b, rank, nw::NewtonWork)
+		if p.do_newton
+			# prepare views
+			Uview = view(U, :, 1:rank)
+			newton_b2_view = view(newton_b2, 1:rank)
+			
+			grad_norm = norm(d)
+			tol = p.tn_κ*min(1, (grad_norm/prev_grad_norm)^2)*grad_norm
+			
+			prev_grad_norm = grad_norm  	# update prev_grad_norm for next time
 
-			# ensure step is on tangent manifold
-			kgemv!('T', rank, 1.0, U, newton_sol_d, 0.0, tmp_m)		# tmp_m = U' d
-			kgemv!('N', rank, -1.0, U, tmp_m, 1.0, newton_sol_d)		# d = d - U*tmp_m
+			# take truncated newton step using ProjCG
+			tn_iter, tn_res = projcg!(newton_d, newton_Δλ, newton_map, Uview, d, newton_b2_view,
+				tol=tol, maxit=p.tn_maxiter, work=projcgwork)
+
 
 			# choose Newton direction if gradient-related
-			if dot(newton_sol_d, d) > 1e-8
-				d .= newton_sol_d
+			if dot(newton_d, d) > 0.0
+				d .= newton_d
 				steptype = 1
-			else
-				failed_newton += 1
-			end
-
-			if failed_newton == 20
-				failed_newton = 0
-				can_do_newton_after = i + 1000
 			end
 		end
 
-
-		#####################################################################################################
-		gmres_res = kkt_diff
+		
 
 		newf = fval
 		flag = 0
@@ -393,7 +298,7 @@ function constrained_descent(f, grad!, c!, jac!, dual_f!, dual_c!, x0::Vector{Fl
 				end
 
 				if flag > 0
-					p.disp == iter && print_iter(i+1, fval, norm(cval,Inf), 0.0, 0.0, steptype, gmres_iter, gmres_res, mtype, nr_iter, pb_iter, pcg_iter, α, flag)
+					p.disp == iter && print_iter(i+1, fval, norm(cval,Inf), 0.0, 0.0, steptype, tn_iter, tn_res, mtype, nr_iter, pb_iter, pcg_iter, α, flag)
 					α *= p.s
 					continue
 				end
@@ -417,7 +322,7 @@ function constrained_descent(f, grad!, c!, jac!, dual_f!, dual_c!, x0::Vector{Fl
 				break
 			end
 
-			p.disp == iter && print_iter(i+1, fval, norm(cval,Inf), 0.0, 0.0, steptype, gmres_iter, gmres_res, mtype, nr_iter, pb_iter, pcg_iter, α, flag)
+			p.disp == iter && print_iter(i+1, fval, norm(cval,Inf), 0.0, 0.0, steptype, tn_iter, tn_res, mtype, nr_iter, pb_iter, pcg_iter, α, flag)
 
 			α *= p.s
 
@@ -433,10 +338,12 @@ function constrained_descent(f, grad!, c!, jac!, dual_f!, dual_c!, x0::Vector{Fl
 			pcg_iter = 0
 		end
 
-		# try to increase Armijo step
-		if p.armijo_period > 0 && mod(i, p.armijo_period) == 0 && !p.disable_linesearch
-			α /= p.s
-		end
+		# # try to increase Armijo step
+		# if p.armijo_period > 0 && mod(i, p.armijo_period) == 0 && !p.disable_linesearch
+		# 	α /= p.s
+		# end
+
+		α = p.α
 
 		@goto END_LINESEARCH
 
@@ -724,7 +631,7 @@ function constrained_descent(f, grad!, c!, jac!, dual_f!, dual_c!, x0::Vector{Fl
 		x .= xnew
 		fval = newf
 		append!(obj_values, fval)
-		p.disp == iter && print_iter(i+1, fval, norm(cval,Inf), f_diff, step_diff, steptype, gmres_iter, gmres_res, mtype, nr_iter, pb_iter, pcg_iter, α, flag)
+		p.disp == iter && print_iter(i+1, fval, norm(cval,Inf), f_diff, step_diff, steptype, tn_iter, tn_res, mtype, nr_iter, pb_iter, pcg_iter, α, flag)
 		
 		i += 1
 
@@ -747,7 +654,7 @@ end
 	@printf("--------------------------------------------------------------------------------------------------------------\n")
 end
 
-@inline function print_iter(i, fval, normc, fstep, normx, steptype, gmres_iter, gmres_res, methodtype, nr_iter, pb_iter, pcg_iter, α, flag)
+@inline function print_iter(i, fval, normc, fstep, normx, steptype, tn_iter, tn_res, methodtype, nr_iter, pb_iter, pcg_iter, α, flag)
 	# print out iteration information
 	if methodtype == 0
 		method = "NR"
@@ -764,7 +671,7 @@ end
 	end
 
 	@printf("%7d | %10.3e  %8.1e  %8.1e  %8.1e  |  %s %4d %8.1e  |  %s %6d %6d  | %8.1e  %4d\n",
-		i, fval, normc, fstep, normx, stepname, gmres_iter, gmres_res, method, iter, pcg_iter, α, flag)
+		i, fval, normc, fstep, normx, stepname, tn_iter, tn_res, method, iter, pcg_iter, α, flag)
 
 	flush(Base.stdout)
 end

@@ -89,6 +89,10 @@ function generate_hess_lag_vec(grad_dual!, jac_dual!, x0, m::Int)
 			dest[i] = duals_n[i].partials[1]
 		end
 
+		if m == 0
+			return dest
+		end
+
 		# calculate dual constraint Jacobian
 		jac_dual!(duals_jac, duals_m, x_dual)
 

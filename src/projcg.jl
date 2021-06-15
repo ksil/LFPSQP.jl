@@ -44,13 +44,13 @@ n = length(b)
 m = length(c)
 
 # work variables
-r = work.r
-g = work.g
-d = work.d
-rp = work.rp
-gp = work.gp
-Ad = work.Ad
-Utr = work.Utr
+r = view(work.r, 1:n)
+g = view(work.g, 1:n)
+d = view(work.d, 1:n)
+rp = view(work.rp, 1:n)
+gp = view(work.gp, 1:n)
+Ad = view(work.Ad, 1:n)
+Utr = view(work.Utr, 1:m)
 
 mul!(x, U, c)                       # satisfies U' x = c
 r .= b
@@ -68,7 +68,7 @@ nr0 = norm(g);
 i = 0
 nr = Inf
 
-while i < maxit
+while i < min(maxit, n+m)
     i += 1
 
     mul!(Ad, A, d)                  # Ad = A*d

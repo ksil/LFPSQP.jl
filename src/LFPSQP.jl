@@ -8,12 +8,17 @@ using LinearAlgebra.BLAS: gemv!, axpy!, ger!
 using Parameters
 using Printf
 using Random: randn!
+using LinearMaps
 
 # include files
 include("projcg.jl")
 include("autodiff_generators.jl")
-# include("la_helper.jl")
+include("la_helper.jl")
 # include("newton_direction.jl")
-# include("constrained_descent.jl")
+include("constrained_descent.jl")
+
+
+export DescentParams
+export constrained_descent
 
 end # module
