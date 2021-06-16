@@ -16,10 +16,10 @@ include("autodiff_generators.jl")
 include("la_helper.jl")
 
 include("retractions.jl")
-include("constrained_descent.jl")
+include("optimize.jl")
 
 
 export LFPSQPParams
-export constrained_descent
+export optimize
 
 end # module
