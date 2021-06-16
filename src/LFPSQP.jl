@@ -19,7 +19,7 @@ include("retractions.jl")
 include("constrained_descent.jl")
 
 
-export DescentParams
+export LFPSQPParams
 export constrained_descent
 
 end # module

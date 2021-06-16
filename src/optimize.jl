@@ -40,7 +40,7 @@ end
 Base.show(io::IO, ti::TerminationInfo) = print(io, "TerminationInfo:\ncondition = $(ti.condition)\n" * 
 	"       Δf = $(ti.f_diff)\n   ||Δx|| = $(ti.step_diff)\n||P(∇f)|| = $(ti.kkt_diff)\n    iters = $(ti.iter)")
 
-@with_kw struct DescentParams
+@with_kw struct LFPSQPParams
 	α::Float64 = 1.0
 	β::Float64 = 0.0
 	t_β::Int64 = 0
@@ -68,7 +68,7 @@ end
 
 
 
-function optimize(f, c!, x0::Vector{Float64}, m::Int64, p::DescentParams)
+function optimize(f, c!, x0::Vector{Float64}, m::Int64, p::LFPSQPParams)
 
 	# generate first-order functions
 	grad! = generate_gradient(f, x0)
@@ -87,7 +87,7 @@ function optimize(f, c!, x0::Vector{Float64}, m::Int64, p::DescentParams)
 end
 
 
-function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int64, p::DescentParams)
+function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int64, p::LFPSQPParams)
 	#= perform constrained optimization of the Helfrich energy
 
 	INPUT
@@ -98,7 +98,7 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 	hess_lag_vec! - function to calculate the action of the Lagrangian Hessian
 	x0 - initial guess
 	m - number of constraints
-	p - algorithmic parameters in a struct DescentParams
+	p - algorithmic parameters in a struct LFPSQPParams
 
 	OUTPUT
 	x - the point to which the algorithm converged
@@ -122,6 +122,8 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 	g = Array{Float64}(undef, n)		# gradient of objective function
 	d = Array{Float64}(undef, n)		# step to take
 	dx = Array{Float64}(undef, n)
+
+	nrwork = NRWork(m)
 
 	tmp_n = Array{Float64}(undef, n)	# temp vectors
 	tmp_n2 = Array{Float64}(undef, n)
@@ -288,7 +290,7 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 			if m > 0
 				if rank == m
 					# full rank, so do Newton Raphson
-					flag, nr_iter = NR!(c!, cval, xtilde, xnew, U, S, Vt, D, tmp_m, tmp_m2, tmp_m3, p.ϵ_c, p.maxiter_nr)
+					flag, nr_iter = NR!(cval, xnew, c! xtilde, U, S, Vt, p.ϵ_c, p.maxiter_nr, nrwork)
 					mtype = 0
 				else
 					# not full rank, so do primal penalty projection
@@ -397,7 +399,7 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 			if m > 0
 				if rank == m
 					# full rank, so do Newton Raphson
-					flag, nr_iter = NR!(c!, cval, x_d, xnew, U, S, Vt, D, tmp_m, tmp_m2, tmp_m3, p.ϵ_c, p.maxiter_nr)
+					flag, nr_iter = NR!(cval, xnew, c!, x_d, U, S, Vt, p.ϵ_c, p.maxiter_nr, nrwork)
 					mtype = 0
 				else
 					# not full rank, so do primal penalty projection
@@ -461,7 +463,7 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 				if m > 0
 					if rank == m
 						# full rank, so do Newton Raphson
-						flag, nr_iter = NR!(c!, cval, x_c, xnew, U, S, Vt, D, tmp_m, tmp_m2, tmp_m3, p.ϵ_c, p.maxiter_nr)
+						flag, nr_iter = NR!(cval, xnew, c!, x_c, U, S, Vt, p.ϵ_c, p.maxiter_nr, nrwork)
 						mtype = 0
 					else
 						# not full rank, so do primal penalty projection
@@ -506,7 +508,7 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 		if m > 0
 			if rank == m
 				# full rank, so do Newton Raphson
-				flag, nr_iter = NR!(c!, cval, x_c, xnew, U, S, Vt, D, tmp_m, tmp_m2, tmp_m3, p.ϵ_c, p.maxiter_nr)
+				flag, nr_iter = NR!(cval, xnew, c!, x_c, U, S, Vt, p.ϵ_c, p.maxiter_nr, nrwork)
 				mtype = 0
 			else
 				# not full rank, so do primal penalty projection
@@ -553,7 +555,7 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 				if m > 0
 					if rank == m
 						# full rank, so do Newton Raphson
-						flag, nr_iter = NR!(c!, cval, x_b, xnew, U, S, Vt, D, tmp_m, tmp_m2, tmp_m3, p.ϵ_c, p.maxiter_nr)
+						flag, nr_iter = NR!(cval, xnew, c!, x_b, U, S, Vt, p.ϵ_c, p.maxiter_nr, nrwork)
 						mtype = 0
 					else
 						# not full rank, so do primal penalty projection
@@ -584,7 +586,7 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 				if m > 0
 					if rank == m
 						# full rank, so do Newton Raphson
-						flag, nr_iter = NR!(c!, cval, x_c, xnew, U, S, Vt, D, tmp_m, tmp_m2, tmp_m3, p.ϵ_c, p.maxiter_nr)
+						flag, nr_iter = NR!(cval, xnew, c!, x_c, U, S, Vt, p.ϵ_c, p.maxiter_nr, nrwork)
 						mtype = 0
 					else
 						# not full rank, so do primal penalty projection

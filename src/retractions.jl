@@ -1,29 +1,49 @@
-function NR!(c!, cval, xtilde, xnew, U, S, Vt, D, tmp_m, tmp_m2, dc, tol, maxiter)
+struct NRWork
+	D::Array{Float64, 2}
+	tmp_m::Vector{Float64}
+	tmp_m2::Vector{Float64}
+	dc::Vector{Float64}
+end
+
+NRWork(m::Int) = NRWork(Array{Float64}(undef, m, m), [Array{Float64}(undef, m) for i in 1:3]...)
+
+
+function NR!(cval, xnew, c!, xtilde, U, S, Vt, tol, maxiter::Int, work::NRWork=NRWork(length(S)))
 	#= performs Newton-Raphson retraction for c(xtilde + U d) using the Jacobian V Σ'
 	which is evaluated at x
 
+	termination criterion is tolerance in inf norm of c!
+
 	INPUT
-	c! - constraint function of the form c!(cval, x) where y is overwritten
 	cval - contraint value vector
-	xtilde - current x
 	xnew - vector in which to store the result
+	c! - constraint function of the form c!(cval, x) where y is overwritten
+	xtilde - current value of x at step in tangent space
 	U, S, Vt - SVD decomposition
-	D - m x m array to store inverse of Jacobian of c(xtilde + Ud)
-	tmp_m, tmp_m2, dc - work vector of size m
-	tol - function tolerance to obtain
+	tol - function tolerance
 	maxiter - maximum number of allowable iterations
+	work - NRWork struct for storage
 
 	OUTPUT
-	cval, xnew, tmp_m overwritten
 	flag - 0 = success, 1 = maxiter reached
+	i - total number of iterations taken
+
+	OVERWRITTEN
+	cval, xnew
 
 	=#
+
+	# extract quantities from NRWork
+	D = work.D    			# m x m array to store inverse of Jacobian of c(xtilde + Ud)
+	tmp_m = work.tmp_m
+	tmp_m2 = work.tmp_m2
+	dc = work.dc
 
 	m = length(S)
 	c!(cval, xtilde)
 	xnew .= xtilde
 
-	# calculate inverse Jacobian
+	# calculate inverse Jacobian Σ^(-1) V'
 	for j in 1:m
 		@fastmath @inbounds @simd for k in 1:m
 			D[k,j] = Vt[k,j] / S[k]
@@ -38,8 +58,6 @@ function NR!(c!, cval, xtilde, xnew, U, S, Vt, D, tmp_m, tmp_m2, dc, tol, maxite
 		end
 
 		# take Newton-Raphson step - tmp_m stores step
-		# gemv!('N', -1.0, Vt, cval, 0.0, tmp_m)	# d = - (V Σ') \ cval = - Σ^(-1) V' cval
-		# tmp_m ./= S
 		gemv!('N', -1.0, D, cval, 0.0, tmp_m)
 		gemv!('N', 1.0, U, tmp_m, 1.0, xnew)	# xnew = xnew + U d
 
