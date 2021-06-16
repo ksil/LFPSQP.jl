@@ -14,7 +14,8 @@ using LinearMaps
 include("projcg.jl")
 include("autodiff_generators.jl")
 include("la_helper.jl")
-# include("newton_direction.jl")
+
+include("retractions.jl")
 include("constrained_descent.jl")
 
 
