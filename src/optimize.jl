@@ -290,7 +290,7 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 			if m > 0
 				if rank == m
 					# full rank, so do Newton Raphson
-					flag, nr_iter = NR!(cval, xnew, c! xtilde, U, S, Vt, p.ϵ_c, p.maxiter_nr, nrwork)
+					flag, nr_iter = NR!(cval, xnew, c!, xtilde, U, S, Vt, p.ϵ_c, p.maxiter_nr, nrwork)
 					mtype = 0
 				else
 					# not full rank, so do primal penalty projection
