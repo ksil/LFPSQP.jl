@@ -58,7 +58,7 @@ function NR!(cval, xnew, c!, xtilde, U, S, Vt, tol, maxiter::Int, work::NRWork=N
 		end
 
 		# take Newton-Raphson step - tmp_m stores step
-		gemv!('N', -1.0, D, cval, 0.0, tmp_m)
+		gemv!('N', -1.0, D, cval, 0.0, tmp_m)	# d = - (V Σ') \ cval = - Σ^(-1) V' cval
 		gemv!('N', 1.0, U, tmp_m, 1.0, xnew)	# xnew = xnew + U d
 
 		# update function values
@@ -69,10 +69,16 @@ function NR!(cval, xnew, c!, xtilde, U, S, Vt, tol, maxiter::Int, work::NRWork=N
 		cval .= tmp_m2
 
 	    gemv!('T', 1.0, D, tmp_m, 0.0, tmp_m2) # D' dx
-	    gemv!('N', -1.0, D, dc, 1.0, tmp_m)
+	    gemv!('N', -1.0, D, dc, 1.0, tmp_m)		# tmp_m = Δx - D*Δc
 
 	    alpha = 1 / dot(tmp_m2, dc)
 	    ger!(alpha, tmp_m, tmp_m2, D)
+
+	    # Bad Broyden
+	    # gemv!('N', -1.0, D, dc, 1.0, tmp_m)		# tmp_m = Δx - D*Δc
+
+	    # alpha = 1 / dot(dc, dc)
+	    # ger!(alpha, tmp_m, dc, D)
 
 		i += 1
 	end
