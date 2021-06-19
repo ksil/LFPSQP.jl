@@ -7,6 +7,18 @@ end
 
 NRWork(m::Int) = NRWork(Array{Float64}(undef, m, m), [Array{Float64}(undef, m) for i in 1:3]...)
 
+struct ProjPenaltyWork
+	J::Array{Float64, 2}
+	tmp_m::Vector{Float64}
+	r::Vector{Float64}
+	p::Vector{Float64}
+	z::Vector{Float64}
+	dx::Vector{Float64}
+end
+
+ProjPenaltyWork(m::Int, n::Int) = ProjPenaltyWork(Array{Float64}(undef, m, n), 
+	Array{Float64}(undef, m), [Array{Float64}(undef, n) for i in 1:4]...)
+
 
 function NR!(cval, xnew, c!, xtilde, U, S, Vt, tol, maxiter::Int, work::NRWork=NRWork(length(S)))
 	#= performs Newton-Raphson retraction for c(xtilde + U d) using the Jacobian V Σ'
@@ -20,7 +32,7 @@ function NR!(cval, xnew, c!, xtilde, U, S, Vt, tol, maxiter::Int, work::NRWork=N
 	c! - constraint function of the form c!(cval, x) where y is overwritten
 	xtilde - current value of x at step in tangent space
 	U, S, Vt - SVD decomposition
-	tol - function tolerance
+	tol - function tolerance for termination
 	maxiter - maximum number of allowable iterations
 	work - NRWork struct for storage
 
@@ -68,13 +80,14 @@ function NR!(cval, xnew, c!, xtilde, U, S, Vt, tol, maxiter::Int, work::NRWork=N
 		dc .= tmp_m2 .- cval
 		cval .= tmp_m2
 
-	    gemv!('T', 1.0, D, tmp_m, 0.0, tmp_m2) # D' dx
-	    gemv!('N', -1.0, D, dc, 1.0, tmp_m)		# tmp_m = Δx - D*Δc
+		# Good Broyden
+		gemv!('T', 1.0, D, tmp_m, 0.0, tmp_m2) # D' dx
+		gemv!('N', -1.0, D, dc, 1.0, tmp_m)		# tmp_m = Δx - D*Δc
 
 	    alpha = 1 / dot(tmp_m2, dc)
 	    ger!(alpha, tmp_m, tmp_m2, D)
 
-	    # Bad Broyden
+	    # # Bad Broyden
 	    # gemv!('N', -1.0, D, dc, 1.0, tmp_m)		# tmp_m = Δx - D*Δc
 
 	    # alpha = 1 / dot(dc, dc)
@@ -91,27 +104,25 @@ function NR!(cval, xnew, c!, xtilde, U, S, Vt, tol, maxiter::Int, work::NRWork=N
 	return flag, i
 end
 
-function pcg!(λ, J, U, S, Vt, rank, x, r, u, c, tmp_m, tol, maxiter)
+function pcg!(μ, J, U, S, Vt, rank, x, r, p, z, tmp_m, tol, maxiter)
 	#= performs preconditioned conjugate gradient to solve Ax = b with
-		A = J' J + λI
-		preconditioned with (J0' J0 + λΙ)^(-1) = 1/λ Ι - 1/λ UΣ(λI + Σ^2)^(-1) Σ' U'
-		
-		Adapted from IterativeSolvers.jl
+		A = J' J + μI
+		preconditioned with (J0' J0 + μΙ)^(-1) = 1/μ Ι - 1/μ UΣ(μI + Σ^2)^(-1) Σ' U'
 
 		INPUT
-		λ - factor for projection
+		μ - factor for projection
 		J - the Jacobian of the constraints
 		U, S, Vt - SVD decomposition of J(x_i), used for preconditioning
 		rank - SVD rank
 		x - initial guess
 		r - residual, should equal b (the right-hand side) using an initial guess of x=0
-		u, c - work vectors of size n for PCG
+		p, z - work vectors of size n for PCG
 		tmp_m - work vector of size m
 		tol - tolerance for convergence
 		maxiter - maximum number of iterations allowed
 
 		OUTPUT
-		x, r, u, c, tmp_m overwritten
+		x, r, p, z, tmp_m overwritten
 		x - overwritten with solution
 		r - overwritten with residual
 		flag - 0 = success, 1 = maxiter reached
@@ -119,45 +130,43 @@ function pcg!(λ, J, U, S, Vt, rank, x, r, u, c, tmp_m, tol, maxiter)
 
 	m = length(S)
 
-	residual = Inf
-	ρ = 1.0
-	fill!(u, 0.0)
-
-	# calculate residual - r = b - Ax
-	# r .= x
-	# gemv!('N', 1.0, J, r, 0.0, tmp_m)
-	# gemv!('T', -1.0, J, tmp_m, -λ, r)
-	# axpy!(1.0, b, r)
+	norm_res = Inf
+	ρ = 1.0               	# set ρ and p initialy to 1.0 and 0.0, as done in IterativeSolvers.jl
+	fill!(p, 0.0)
 
 	i = 0
-	while residual > tol && i < maxiter
-		# precondition
-		# ldiv!(c, Pl, r)
-		c .= r
+	while norm_res > tol && i < maxiter
+		# precondition - z = M^{-1} r
+		z .= r
 		kgemv!('T', rank, 1.0, U, r, 0.0, tmp_m)
 		@fastmath @inbounds @simd for j in 1:rank
-			tmp_m[j] *= S[j]*S[j] / (λ + S[j]*S[j])
+			tmp_m[j] *= S[j]*S[j] / (μ + S[j]*S[j])
 		end
-		kgemv!('N', rank, -1/λ, U, tmp_m, 1/λ, c)
+		kgemv!('N', rank, -1/μ, U, tmp_m, 1/μ, z)
 
+		# update ρ = r^T z
 		ρ_prev = ρ
-		ρ = dot(c, r)
+		ρ = dot(z, r)
 
-		# u := c + βu (almost an axpy)
+		# update β and direction p
 		β = ρ / ρ_prev
-		u .= c .+ β .* u
+		p .= z .+ β.*p
 
-		# c = A * u
-		c .= u
-		gemv!('N', 1.0, J, u, 0.0, tmp_m)
-		gemv!('T', 1.0, J, tmp_m, λ, c)
-		α = ρ / dot(u, c)
+		# store A*p in z
+		z .= p
+		gemv!('N', 1.0, J, p, 0.0, tmp_m)
+		gemv!('T', 1.0, J, tmp_m, μ, z)
 
-		# Improve solution and residual
-		axpy!(α, u, x)
-		axpy!(-α, c, r)
+		# update α = r^T z / (p^T A p)
+		α = ρ / dot(p, z)
 
-		residual = norm(r)
+		# update solution
+		# x = x + α*p
+		# r = r - α*A*p
+		axpy!(α, p, x)
+		axpy!(-α, z, r)
+
+		norm_res = norm(r)
 
 		i += 1
 	end
@@ -170,90 +179,90 @@ function pcg!(λ, J, U, S, Vt, rank, x, r, u, c, tmp_m, tol, maxiter)
 	return flag, i
 end
 
-function project_penalty!(c!, cval, xtilde, xnew, U, S, Vt, rank, J, tmp_m, dc, r, u, c, dx, p)
+function project_penalty!(cval, xnew, c!, xtilde, jac!, U, S, Vt, rank, μ0, tol, maxiter, maxiter_pcg,
+	work::ProjPenaltyWork=ProjPenaltyWork(length(cval), length(xnew)))
+
 	#= performs primal penalty minimization of 
-		1/2 || c(z) ||^2 + λ/2 || z - xtilde ||^2
-	as λ → 0
-	assumes gradient is given by Jct c + λ (z - xtilde)
-	assumes the Hessian is of the form Jct Jc + λ I = U Σ^2 U' + λ I
+		1/2 || c(z) ||^2 + μ/2 || z - xtilde ||^2
+	as μ → 0
+	
+	gradient is given by Jct c + μ (z - xtilde)
+	uses Gauss-Newton Hessian of the form Jct Jc + μ I = U Σ^2 U' + μ I
 
 	INPUT
-	c! - constraint function of the form c!(cval, x) where y is overwritten
 	cval - contraint value vector
-	xtilde - current x
 	xnew - vector in which to store the result
-	U, S, Vt - SVD decomposition
+	c! - constraint function of the form c!(cval, x) where y is overwritten
+	xtilde - current x
+	jac! - function to calculate Jacobian of the form jac!(J, cval, x)
+	U, S, Vt - SVD decomposition of Jacobian at xtilde
 	rank - SVD rank
-	J - m x n Jacobian at x_i
-	dc, tmp_m - work vectors of size m
-	r, u, c, dx - work vectors of size n (ASSUMES dx contains xtilde - x_i)
-	p - parameters for convergence
+	μ0 - initial penalty strength μ0
+	tol - function tolerance for termination
+	maxiter - maximum number of (outer) iterations
+	maxiter_pcg - maximum number of (inner) pcg iterations
+	work - ProjPenaltyWork struct for storage
 
 	OUTPUT
-	cval, xnew, tmp_m, dc, r, u, c, dx overwritten
 	flag - 0 = success, 1 = maxiter reached, 2 = pcg maxiter reached
+	i - total number of (outer) iterations taken
+	pcg_iter_count - total cumulative number of (inner) pcg iterations taken
+
+	OVERWRITTEN
+	cval, xnew
 
 	=#
+
+	# unpack work variables
+	J = work.J
+	tmp_m = work.tmp_m
+	r = work.r
+	p = work.p
+	z = work.z
+	dx = work.dx
+
 
 	flag = 0 # return flag
 
 	# initialize x vectors and calculate constraint functions
 	xnew .= xtilde
-	λ = p.λ0
-	c!(tmp_m, xnew)
-
-	# do initial Broyden update for J(xtilde) - assumes c(x_i) = 0.0 and dx = xtilde - x_i
-	dc .= tmp_m
-    gemv!('N', -1.0, J, dx, 1.0, dc)
-
-	alpha = 1 / dot(dx, dx)
-	ger!(alpha, dc, dx, J)
-
-	cval .= tmp_m
+	μ = μ0
+	
+	# calculate Jacobian at xtilde
+	jac!(J, cval, xtilde)
 
 	i = 0
 	pcg_iter_count = 0
-	while i < p.maxiter_nr
+	while i < maxiter
 		# check if tolerance met
-		if norm(cval, Inf) < p.ϵ_c
+		if norm(cval, Inf) < tol
 			break
 		end
 
-	    # cval = c(xnew);
-
-	    # calculate right-hand side r = (J' c + λ*(xnew - xtilde))
+	    # calculate right-hand side r = (J' c + μ*(xnew - xtilde))
 	    r .= xnew .- xtilde
-	    gemv!('T', 1.0, J, cval, λ, r)
+	    gemv!('T', 1.0, J, cval, μ, r)
 	    fill!(dx, 0.0)
 
-	    # do Newton step = (J'J + λI) \ r
-	    pcgf, pcgi = pcg!(λ, J, U, S, Vt, rank, dx, r, u, c, tmp_m, p.ϵ_c, p.maxiter_pcg)
-	    pcg_iter_count += pcgi
-	    if pcgf > 0
+	    # do Newton step = (J'J + μI) \ r
+	    pcg_flag, pcg_i = pcg!(μ, J, U, S, Vt, rank, dx, r, p, z, tmp_m, tol, maxiter_pcg)
+	    pcg_iter_count += pcg_i
+	    if pcg_flag > 0
 	    	# do no further iterations if pcg exceeds the maximum iteration count
 	    	flag = 2
 	    	break
 	    end
 	    xnew .-= dx
 
-	    # calculate new constraint function values
-	    c!(tmp_m, xnew)
+	    # calculate new constraint function values and Jacobian
+	    jac!(J, cval, xnew)
 
-	    # Broyden update - J = J + (dc - J*dx)*dx'/sum(dx.*dx);
-	    dx .*= -1.0 # need to flip sign
-	    dc .= tmp_m .- cval
-	    gemv!('N', -1.0, J, dx, 1.0, dc)
-
-	    alpha = 1 / dot(dx, dx)
-	    ger!(alpha, dc, dx, J)
-
-	    # update count, λ, and function values
+	    # update count, μ, and function values
 		i += 1
-		λ *= 0.1
-		cval .= tmp_m
+		μ *= 0.1
 	end
 
-	if i == p.maxiter_nr
+	if i == maxiter
 		flag = 1
 	end
 
