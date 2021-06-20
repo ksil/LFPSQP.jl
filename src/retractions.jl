@@ -7,6 +7,15 @@ end
 
 NRWork(m::Int) = NRWork(Array{Float64}(undef, m, m), [Array{Float64}(undef, m) for i in 1:3]...)
 
+mutable struct NR
+	U::Array{Float64, 2}
+	S::Array{Float64, 1}
+	Vt::Array{Float64, 2}
+	tol::Float64
+	maxiter::Int
+	work::NRWork
+end
+
 struct ProjPenaltyWork
 	J::Array{Float64, 2}
 	tmp_m::Vector{Float64}
@@ -14,13 +23,34 @@ struct ProjPenaltyWork
 	p::Vector{Float64}
 	z::Vector{Float64}
 	dx::Vector{Float64}
+	g::Vector{Float64}
 end
 
 ProjPenaltyWork(m::Int, n::Int) = ProjPenaltyWork(Array{Float64}(undef, m, n), 
-	Array{Float64}(undef, m), [Array{Float64}(undef, n) for i in 1:4]...)
+	Array{Float64}(undef, m), [Array{Float64}(undef, n) for i in 1:5]...)
+
+mutable struct ProjPenalty{F <: Function}
+	jac!::F
+	U::Array{Float64, 2}
+	S::Array{Float64, 1}
+	Vt::Array{Float64, 2}
+	rank::Int
+	μ0::Float64
+	tol::Float64
+	maxiter::Int
+	maxiter_pcg::Int
+	work::ProjPenaltyWork
+end
+
+struct Euclidean
+end
+
+function retract!(cval, xnew, c!, xtilde, method::Euclidean)
+	xnew .= xtilde
+end
 
 
-function NR!(cval, xnew, c!, xtilde, U, S, Vt, tol, maxiter::Int, work::NRWork=NRWork(length(S)))
+function retract!(cval, xnew, c!, xtilde, method::NR)
 	#= performs Newton-Raphson retraction for c(xtilde + U d) using the Jacobian V Σ'
 	which is evaluated at x
 
@@ -44,6 +74,14 @@ function NR!(cval, xnew, c!, xtilde, U, S, Vt, tol, maxiter::Int, work::NRWork=N
 	cval, xnew
 
 	=#
+
+	# unpack
+	U = method.U
+	S = method.S
+	Vt = method.Vt
+	tol = method.tol
+	maxiter = method.maxiter
+	work = method.work
 
 	# extract quantities from NRWork
 	D = work.D    			# m x m array to store inverse of Jacobian of c(xtilde + Ud)
@@ -101,7 +139,7 @@ function NR!(cval, xnew, c!, xtilde, U, S, Vt, tol, maxiter::Int, work::NRWork=N
 		flag = 1
 	end
 
-	return flag, i
+	return flag, i, 0
 end
 
 function pcg!(μ, J, U, S, Vt, rank, x, r, p, z, tmp_m, tol, maxiter)
@@ -179,8 +217,7 @@ function pcg!(μ, J, U, S, Vt, rank, x, r, p, z, tmp_m, tol, maxiter)
 	return flag, i
 end
 
-function project_penalty!(cval, xnew, c!, xtilde, jac!, U, S, Vt, rank, μ0, tol, maxiter, maxiter_pcg,
-	work::ProjPenaltyWork=ProjPenaltyWork(length(cval), length(xnew)))
+function retract!(cval, xnew, c!, xtilde, method::ProjPenalty{F}) where F
 
 	#= performs primal penalty minimization of 
 		1/2 || c(z) ||^2 + μ/2 || z - xtilde ||^2
@@ -204,7 +241,7 @@ function project_penalty!(cval, xnew, c!, xtilde, jac!, U, S, Vt, rank, μ0, tol
 	work - ProjPenaltyWork struct for storage
 
 	OUTPUT
-	flag - 0 = success, 1 = maxiter reached, 2 = pcg maxiter reached
+	flag - 0 = success, 1 = maxiter reached, 2 = pcg maxiter reached, 3 = linesearch failed
 	i - total number of (outer) iterations taken
 	pcg_iter_count - total cumulative number of (inner) pcg iterations taken
 
@@ -213,6 +250,18 @@ function project_penalty!(cval, xnew, c!, xtilde, jac!, U, S, Vt, rank, μ0, tol
 
 	=#
 
+	# unpack
+	jac! = method.jac!
+	U = method.U
+	S = method.S
+	Vt = method.Vt
+	rank = method.rank
+	μ0 = method.μ0
+	tol = method.tol
+	maxiter = method.maxiter
+	maxiter_pcg = method.maxiter_pcg
+	work = method.work
+
 	# unpack work variables
 	J = work.J
 	tmp_m = work.tmp_m
@@ -220,6 +269,7 @@ function project_penalty!(cval, xnew, c!, xtilde, jac!, U, S, Vt, rank, μ0, tol
 	p = work.p
 	z = work.z
 	dx = work.dx
+	g = work.g
 
 
 	flag = 0 # return flag
@@ -227,22 +277,27 @@ function project_penalty!(cval, xnew, c!, xtilde, jac!, U, S, Vt, rank, μ0, tol
 	# initialize x vectors and calculate constraint functions
 	xnew .= xtilde
 	μ = μ0
-	
-	# calculate Jacobian at xtilde
-	jac!(J, cval, xtilde)
+
 
 	i = 0
 	pcg_iter_count = 0
 	while i < maxiter
+		# calculate new constraint function values and Jacobian
+	    jac!(J, cval, xnew)
+
 		# check if tolerance met
 		if norm(cval, Inf) < tol
 			break
 		end
 
-	    # calculate right-hand side r = (J' c + μ*(xnew - xtilde))
-	    r .= xnew .- xtilde
-	    gemv!('T', 1.0, J, cval, μ, r)
+	    # calculate right-hand side g = (J' c + μ*(xnew - xtilde))
+	    g .= xnew .- xtilde
+
+	    prev_dist2 = dot(g, g)	# for use below
+
+	    gemv!('T', 1.0, J, cval, μ, g)
 	    fill!(dx, 0.0)
+	    r .= g
 
 	    # do Newton step = (J'J + μI) \ r
 	    pcg_flag, pcg_i = pcg!(μ, J, U, S, Vt, rank, dx, r, p, z, tmp_m, tol, maxiter_pcg)
@@ -252,12 +307,39 @@ function project_penalty!(cval, xnew, c!, xtilde, jac!, U, S, Vt, rank, μ0, tol
 	    	flag = 2
 	    	break
 	    end
-	    xnew .-= dx
 
-	    # calculate new constraint function values and Jacobian
-	    jac!(J, cval, xnew)
+	    # do Armijo backtracking linesearch
+	    p .= xnew
+	    m = -dot(g, dx)						# step*gradient
 
-	    # update count, μ, and function values
+	    prev_obj_val = dot(cval, cval) + μ*prev_dist2
+	    α = 1.0
+
+	    xnew .-= α.*dx
+	    g .= xnew .- xtilde
+	    dist2 = dot(g, g)
+	    c!(cval, xnew)
+
+	    armijo_count = 0
+	    while dot(cval, cval) + μ*dist2 > prev_obj_val + 1e-4*α*m
+	    	# update values with new step size
+	    	α /= 2
+	    	xnew .= p .- α.*dx
+		    g .= xnew .- xtilde
+		    dist2 = dot(g, g)
+		    c!(cval, xnew)
+
+		    # break with error if Armijo iteration count is excessive
+	    	armijo_count += 1
+
+	    	if armijo_count == 100
+	    		flag = 3
+	    		break
+	    	end
+	    end
+
+
+	    # update iteration count and μ
 		i += 1
 		μ *= 0.1
 	end

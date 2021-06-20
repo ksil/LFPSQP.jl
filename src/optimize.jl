@@ -124,9 +124,6 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 	d = Array{Float64}(undef, n)		# step to take
 	dx = Array{Float64}(undef, n)
 
-	nrwork = NRWork(m)
-	ppwork = ProjPenaltyWork(m, n)
-
 	tmp_n = Array{Float64}(undef, n)	# temp vectors
 	tmp_n2 = Array{Float64}(undef, n)
 	tmp_n3 = Array{Float64}(undef, n)
@@ -158,6 +155,10 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 	prev_grad_norm = 0.0					# forces tol to be κ*grad_norm initially
 	grad_norm = Inf
 	newton_map = LinearMap{Float64}((dest, src) -> hess_lag_vec!(dest, src, x, λ_kkt), n, ismutating=true, issymmetric=true)
+
+	# retraction methods
+	nr = NR(U, S, Vt, param.ϵ_c, param.maxiter_retract, NRWork(m))
+	pp = ProjPenalty(jac!, U, S, Vt, m, param.μ0, param.ϵ_c, param.maxiter_retract, param.maxiter_pcg, ProjPenaltyWork(m, n))
 
 	# ----------------------- Calculate gradient -------------------------
 	i = 0
@@ -210,6 +211,9 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 		end
 
 		kkt_diff = norm(d, Inf)
+
+		# update rank in ProjPenalty
+		pp.rank = rank
 
 
 		steptype = 0
@@ -292,11 +296,11 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 			if m > 0
 				if rank == m && !param.do_project_retract
 					# full rank, so do Newton Raphson
-					flag, nr_iter = NR!(cval, xnew, c!, xtilde, U, S, Vt, param.ϵ_c, param.maxiter_retract, nrwork)
+					flag, nr_iter, _ = retract!(cval, xnew, c!, xtilde, nr)
 					mtype = 0
 				else
 					# not full rank, so do primal penalty projection
-					flag, pb_iter, pcg_iter = project_penalty!(cval, xnew, c!, xtilde, jac!, U, S, Vt, rank, param.μ0, param.ϵ_c, param.maxiter_retract, param.maxiter_pcg, ppwork)
+					flag, pb_iter, pcg_iter = retract!(cval, xnew, c!, xtilde, pp)
 					mtype = 1
 				end
 
@@ -401,11 +405,11 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 			if m > 0
 				if rank == m && !param.do_project_retract
 					# full rank, so do Newton Raphson
-					flag, nr_iter = NR!(cval, xnew, c!, x_d, U, S, Vt, param.ϵ_c, param.maxiter_retract, nrwork)
+					flag, nr_iter, _ = retract!(cval, xnew, c!, x_d, nr)
 					mtype = 0
 				else
 					# not full rank, so do primal penalty projection
-					flag, pb_iter, pcg_iter = project_penalty!(cval, xnew, c!, x_d, jac!, U, S, Vt, rank, param.μ0, param.ϵ_c, param.maxiter_retract, param.maxiter_pcg, ppwork)
+					flag, pb_iter, pcg_iter = retract!(cval, xnew, c!, x_d, pp)
 					mtype = 1
 				end
 
@@ -465,11 +469,11 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 				if m > 0
 					if rank == m && !param.do_project_retract
 						# full rank, so do Newton Raphson
-						flag, nr_iter = NR!(cval, xnew, c!, x_c, U, S, Vt, param.ϵ_c, param.maxiter_retract, nrwork)
+						flag, nr_iter, _ = retract!(cval, xnew, c!, x_c, nr)
 						mtype = 0
 					else
 						# not full rank, so do primal penalty projection
-						flag, pb_iter, pcg_iter = project_penalty!(cval, xnew, c!, x_c, jac!, U, S, Vt, rank, param.μ0, param.ϵ_c, param.maxiter_retract, param.maxiter_pcg, ppwork)
+						flag, pb_iter, pcg_iter = retract!(cval, xnew, c!, x_c, pp)
 						mtype = 1
 					end
 
@@ -510,11 +514,11 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 		if m > 0
 			if rank == m && !param.do_project_retract
 				# full rank, so do Newton Raphson
-				flag, nr_iter = NR!(cval, xnew, c!, x_c, U, S, Vt, param.ϵ_c, param.maxiter_retract, nrwork)
+				flag, nr_iter, _ = retract!(cval, xnew, c!, x_c, nr)
 				mtype = 0
 			else
 				# not full rank, so do primal penalty projection
-				flag, pb_iter, pcg_iter = project_penalty!(cval, xnew, c!, x_c, jac!, U, S, Vt, rank, param.μ0, param.ϵ_c, param.maxiter_retract, param.maxiter_pcg, ppwork)
+				flag, pb_iter, pcg_iter = retract!(cval, xnew, c!, x_c, pp)
 				mtype = 1
 			end
 
@@ -557,11 +561,11 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 				if m > 0
 					if rank == m && !param.do_project_retract
 						# full rank, so do Newton Raphson
-						flag, nr_iter = NR!(cval, xnew, c!, x_b, U, S, Vt, param.ϵ_c, param.maxiter_retract, nrwork)
+						flag, nr_iter, _ = retract!(cval, xnew, c!, x_b, nr)
 						mtype = 0
 					else
 						# not full rank, so do primal penalty projection
-						flag, pb_iter, pcg_iter = project_penalty!(cval, xnew, c!, x_b, jac!, U, S, Vt, rank, param.μ0, param.ϵ_c, param.maxiter_retract, param.maxiter_pcg, ppwork)
+						flag, pb_iter, pcg_iter = retract!(cval, xnew, c!, x_b, pp)
 						mtype = 1
 					end
 
@@ -588,11 +592,11 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 				if m > 0
 					if rank == m && !param.do_project_retract
 						# full rank, so do Newton Raphson
-						flag, nr_iter = NR!(cval, xnew, c!, x_c, U, S, Vt, param.ϵ_c, param.maxiter_retract, nrwork)
+						flag, nr_iter, _ = retract!(cval, xnew, c!, x_c, nr)
 						mtype = 0
 					else
 						# not full rank, so do primal penalty projection
-						flag, pb_iter, pcg_iter = project_penalty!(cval, xnew, c!, x_c, jac!, U, S, Vt, rank, param.μ0, param.ϵ_c, param.maxiter_retract, param.maxiter_pcg, ppwork)
+						flag, pb_iter, pcg_iter = retract!(cval, xnew, c!, x_c, pp)
 						mtype = 1
 					end
 
