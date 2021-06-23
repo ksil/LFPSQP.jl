@@ -47,6 +47,8 @@ end
 
 function retract!(cval, xnew, c!, xtilde, method::Euclidean)
 	xnew .= xtilde
+
+	return 0, 0, 0
 end
 
 
@@ -310,7 +312,7 @@ function retract!(cval, xnew, c!, xtilde, method::ProjPenalty{F}) where F
 
 	    # do Armijo backtracking linesearch
 	    p .= xnew
-	    m = -dot(g, dx)						# step*gradient
+	    ar_dot = -dot(g, dx)			# step*gradient
 
 	    prev_obj_val = dot(cval, cval) + μ*prev_dist2
 	    α = 1.0
@@ -321,7 +323,7 @@ function retract!(cval, xnew, c!, xtilde, method::ProjPenalty{F}) where F
 	    c!(cval, xnew)
 
 	    armijo_count = 0
-	    while dot(cval, cval) + μ*dist2 > prev_obj_val + 1e-4*α*m
+	    while dot(cval, cval) + μ*dist2 > prev_obj_val + 1e-4*α*ar_dot
 	    	# update values with new step size
 	    	α /= 2
 	    	xnew .= p .- α.*dx
@@ -341,7 +343,8 @@ function retract!(cval, xnew, c!, xtilde, method::ProjPenalty{F}) where F
 
 	    # update iteration count and μ
 		i += 1
-		μ *= 0.1
+		μ = min(μ*0.1, norm(cval))
+		# μ *= 0.1
 	end
 
 	if i == maxiter

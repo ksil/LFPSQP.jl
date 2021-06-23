@@ -1,74 +1,3 @@
-import Base.show
-
-# redifine tags to avoid errors
-# NOTE that this may break nested differentation, but I don't believe this can be the case
-# based on the way that I use these dual types in newton_direction.jl
-@inline function ForwardDiff.:≺(::Type{Tag{F1,V1}}, Nothing) where {F1,V1}
-    return false
-end
-
-@inline function ForwardDiff.:≺(Nothing, ::Type{Tag{F1,V1}}) where {F1,V1}
-    return true
-end
-
-@enum DisplayOption begin
-    off
-    iter
-end
-
-@enum LinesearchOption begin
-    armijo
-    exact
-end
-
-@enum TerminationCondition begin
-	f_tol
-	x_tol
-	kkt_tol
-	max_iter
-	armijo_error
-end
-
-struct TerminationInfo
-	condition::TerminationCondition
-	f_diff::Float64
-	step_diff::Float64
-	kkt_diff::Float64
-	iter::Int64
-end
-
-Base.show(io::IO, ti::TerminationInfo) = print(io, "TerminationInfo:\ncondition = $(ti.condition)\n" * 
-	"       Δf = $(ti.f_diff)\n   ||Δx|| = $(ti.step_diff)\n||P(∇f)|| = $(ti.kkt_diff)\n    iters = $(ti.iter)")
-
-@with_kw struct LFPSQPParams
-	α::Float64 = 1.0
-	β::Float64 = 0.0
-	t_β::Int64 = 0
-	s::Float64 = 0.5
-	σ::Float64 = 1e-4
-	ϵ_c::Float64 = 1e-6
-	ϵ_f::Float64 = 1e-6
-	ϵ_x::Float64 = 0.0
-	ϵ_kkt::Float64 = 1e-6
-	ϵ_rank::Float64 = 1e-10
-	maxiter::Int64 = 10000
-	maxiter_retract::Int64 = 100
-	maxiter_pcg::Int64 = 100
-	μ0::Float64 = 1e-2
-	disable_linesearch::Bool = false
-	do_project_retract::Bool = false
-	disp::DisplayOption = iter
-	callback::Union{Nothing,Function} = nothing
-	callback_period::Int64 = 100
-	linesearch::LinesearchOption = armijo
-	armijo_period::Int64 = 100
-	do_newton::Bool = true
-	tn_maxiter::Int64 = 10000
-	tn_κ::Float64 = 0.5
-end
-
-
-
 function optimize(f, c!, x0::Vector{Float64}, m::Int64, param::LFPSQPParams)
 
 	# generate first-order functions
@@ -119,20 +48,12 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 	xnew = similar(x)
 	Jc = Array{Float64}(undef, m, n) 	# Jacobian of constraints
 	Jct = Array{Float64}(undef, n, m)	# gradient of constraints (Jacobian transpose)
-	D = Array{Float64}(undef, m, m)
 	g = Array{Float64}(undef, n)		# gradient of objective function
 	d = Array{Float64}(undef, n)		# step to take
 	dx = Array{Float64}(undef, n)
 
 	tmp_n = Array{Float64}(undef, n)	# temp vectors
-	tmp_n2 = Array{Float64}(undef, n)
-	tmp_n3 = Array{Float64}(undef, n)
-	tmp_n4 = Array{Float64}(undef, n)	# used by exact linesearch
-	tmp_n5 = Array{Float64}(undef, n)
-	tmp_n6 = Array{Float64}(undef, n)
-	tmp_m = Array{Float64}(undef, m)	# temp vector to do projection
-	tmp_m2 = Array{Float64}(undef, m)
-	tmp_m3 = Array{Float64}(undef, m)
+	tmp_m = Array{Float64}(undef, m)
 	
 	cval = zeros(m)						# to store constraint values
 	λ_kkt = zeros(m)
@@ -159,13 +80,17 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 	# retraction methods
 	nr = NR(U, S, Vt, param.ϵ_c, param.maxiter_retract, NRWork(m))
 	pp = ProjPenalty(jac!, U, S, Vt, m, param.μ0, param.ϵ_c, param.maxiter_retract, param.maxiter_pcg, ProjPenaltyWork(m, n))
+	euc = Euclidean()
+
+	# linesearch work structs
+	armijo_work = ArmijoWork(n)
+	exact_work = ExactLinesearchWork(n)
 
 	# ----------------------- Calculate gradient -------------------------
 	i = 0
 	f_diff = Inf
 	step_diff = Inf
 	kkt_diff = Inf
-	α = param.α
 
 	fval = f(x)
 	append!(obj_values, fval)
@@ -267,7 +192,7 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 				tol=tol, maxit=param.tn_maxiter, work=projcgwork)
 
 
-			# choose Newton direction if gradient-related
+			# choose Newton direction if in gradient direction
 			if dot(newton_d, d) > 0.0
 				d .= newton_d
 				steptype = 1
@@ -275,370 +200,36 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 		end
 
 
+		# ---------------------- Linesearch ------------------------
 
-		newf = fval
-		flag = 0
-		nr_iter = 0
-		pb_iter = 0
-		pcg_iter = 0
-		mtype = 0
-
-		if param.linesearch == exact && !param.disable_linesearch
-			@goto EXACT_LINESEARCH
-		end
-
-		# ---------- Armijo line search --------------
-
-		while f_diff > param.ϵ_f && step_diff > param.ϵ_x
-			dx .= α.*d
-			xtilde .= x .+ dx
-
-			if m > 0
-				if rank == m && !param.do_project_retract
-					# full rank, so do Newton Raphson
-					flag, nr_iter, _ = retract!(cval, xnew, c!, xtilde, nr)
-					mtype = 0
-				else
-					# not full rank, so do primal penalty projection
-					flag, pb_iter, pcg_iter = retract!(cval, xnew, c!, xtilde, pp)
-					mtype = 1
-				end
-
-				if flag > 0
-					param.disp == iter && print_iter(i+1, fval, norm(cval,Inf), 0.0, 0.0, steptype, tn_iter, tn_res, mtype, nr_iter, pb_iter, pcg_iter, α, flag)
-					α *= param.s
-					continue
-				end
-			else
-				xnew .= xtilde
-			end
-
-			# calculate new function values
-			tmp_n .= xnew .- x
-			newf = f(xnew)
-
-			step_diff = norm(tmp_n)
-			f_diff = abs(newf - fval)
-
-			# break conditions
-			if param.disable_linesearch
-				break
-			end
-
-			if (newf - fval) <= param.σ * dot(g, tmp_n)
-				break
-			end
-
-			param.disp == iter && print_iter(i+1, fval, norm(cval,Inf), 0.0, 0.0, steptype, tn_iter, tn_res, mtype, nr_iter, pb_iter, pcg_iter, α, flag)
-
-			α *= param.s
-
-			# to prevent infinite loop
-			if α < 1e-100
-				@error("Armijo line search failed")
-				return x, obj_values, λ_kkt, TerminationInfo(armijo_error, f_diff, step_diff, kkt_diff, i)
-			end
-
-			flag = 0
-			nr_iter = 0
-			pb_iter = 0
-			pcg_iter = 0
-		end
-
-		# # try to increase Armijo step
-		# if param.armijo_period > 0 && mod(i, param.armijo_period) == 0 && !param.disable_linesearch
-		# 	α /= param.s
-		# end
-
-		α = param.α
-
-		@goto END_LINESEARCH
-
-
-		# ---------- Exact line search --------------
-
-		@label EXACT_LINESEARCH
-		ϕ1 = (3 - sqrt(5))/2
-		ϕ2 = (sqrt(5) - 1)/2
-		ϕ3 = (sqrt(5) + 1)/2
-		Δ = α     		# use previous α as step length guess
-		f_a = 0.0
-		f_b = 0.0
-		f_c = 0.0
-		f_d = 0.0
-		α_a = 0.0
-		α_b = 0.0
-		α_c = 0.0
-		α_d = 0.0
-		x_a = xtilde
-		x_b = tmp_n4
-		x_c = tmp_n5
-		x_d = tmp_n6
-		do_shrinking = true
-		exact_iter_count = 0
-
-		# find the upper bound and maintain rotating list of points
-		x_d .= x
-		f_d = fval
-
-		# println("Growing")
-		while true
-			exact_iter_count += 1
-			# @printf("xs: %f %f %f %f\n", x_a[1], x_b[1], x_c[1], x_d[1])
-			# @printf("αs: %f %f %f %f\n", α_a[1], α_b[1], α_c[1], α_d[1])
-			# @printf("fs: %f %f %f %f\n", f_a[1], f_b[1], f_c[1], f_d[1])
-			# println("---")
-
-			swp = x_b	# rotate all of the position vectors
-			x_b = x_c
-			x_c = x_d
-			x_d = swp
-
-			f_b = f_c
-			f_c = f_d
-			α_b = α_c
-			α_c = α_d
-
-			dx .= (α_d + Δ).*d
-			x_d .= x .+ dx
-
-			if m > 0
-				if rank == m && !param.do_project_retract
-					# full rank, so do Newton Raphson
-					flag, nr_iter, _ = retract!(cval, xnew, c!, x_d, nr)
-					mtype = 0
-				else
-					# not full rank, so do primal penalty projection
-					flag, pb_iter, pcg_iter = retract!(cval, xnew, c!, x_d, pp)
-					mtype = 1
-				end
-
-				x_d .= xnew 	# update x_d with projected step
-			end
-
-			α_d += Δ
-
-			# should break if projection failed or if α > 1.0
-			if flag > 0 || α_d > 1.0
-				f_d = Inf 		# Inf indicates projection failed
-				break
-			end
-
-			f_d = f(x_d)
-
-			if f_d > f_c
-				break
-			end
-
-			do_shrinking = false
-			Δ *= ϕ3
-		end
-
-		# no feasible upper bound found, so perform shrinking 
-		if do_shrinking
-			# println("Shrinking")
-			# assign b with α=0 so that point a is assigned correctly below
-			f_b = fval
-			α_b = 0.0
-			x_b .= x
-
-			f_c = Inf
-			α_c = Δ
-
-			swp = x_d	# swap with d since d contains the point for α=Δ already
-			x_d = x_c
-			x_c = swp
-
-			while true
-				exact_iter_count += 1
-				# @printf("xs: %f %f %f %f\n", x_a[1], x_b[1], x_c[1], x_d[1])
-				# @printf("αs: %f %f %f %f\n", α_a[1], α_b[1], α_c[1], α_d[1])
-				# @printf("fs: %f %f %f %f\n", f_a[1], f_b[1], f_c[1], f_d[1])
-				# println("---")
-
-				swp = x_d	# swapping is now "up" toward d since Δ is getting shrunk
-				x_d = x_c
-				x_c = swp
-
-				f_d = f_c
-				α_d = α_c
-
-				dx .= (ϕ1*α_c).*d
-				x_c .= x .+ dx
-
-				if m > 0
-					if rank == m && !param.do_project_retract
-						# full rank, so do Newton Raphson
-						flag, nr_iter, _ = retract!(cval, xnew, c!, x_c, nr)
-						mtype = 0
-					else
-						# not full rank, so do primal penalty projection
-						flag, pb_iter, pcg_iter = retract!(cval, xnew, c!, x_c, pp)
-						mtype = 1
-					end
-
-					x_c .= xnew 	# update x_c with projected step
-				end
-
-				α_c *= ϕ1
-
-				# should break if projection failed or if α > 1.0
-				if flag > 0 || α_c > 1.0
-					f_c = Inf
-				else
-					f_c = f(x_c)
-				end
-
-				if f_c <= fval || α_c < 1e-100
-					break
-				end
-			end
-		end
-
-		# assign values from upper bounding procedure and calculate point c
-		exact_iter_count += 1
-		f_a = f_b
-		f_b = f_c
-		α_a = α_b
-		α_b = α_c
-
-		swp = x_a
-		x_a = x_b
-		x_b = x_c
-		x_c = swp
-
-		α_c = α_a + ϕ2*(α_d - α_a)
-		dx .= α_c.*d
-		x_c .= x .+ dx
-
+		# determine retraction method to use
 		if m > 0
 			if rank == m && !param.do_project_retract
-				# full rank, so do Newton Raphson
-				flag, nr_iter, _ = retract!(cval, xnew, c!, x_c, nr)
+				retract_method = nr
 				mtype = 0
 			else
-				# not full rank, so do primal penalty projection
-				flag, pb_iter, pcg_iter = retract!(cval, xnew, c!, x_c, pp)
+				retract_method = pp
 				mtype = 1
 			end
-
-			x_c .= xnew 	# update x_d with projected step
-		end
-
-		if flag > 0 || α_c > 1.0
-			f_c = Inf
 		else
-			f_c = f(x_c)
+			retract_method = euc
+			mtype = 0
 		end
 
-		# println("Going into loop")
 
-		# do golden ratio bisection
-		nd = norm(d)
-		while (α_c - α_b) > 1e-6/nd
-			exact_iter_count += 1
-			# @printf("%f %f %f %f\n", x_a[1], x_b[1], x_c[1], x_d[1])
-			# @printf("αs: %f %f %f %f\n", α_a[1], α_b[1], α_c[1], α_d[1])
-			# @printf("fs: %f %f %f %f\n", f_a[1], f_b[1], f_c[1], f_d[1])
-			# println("---")
-
-			if f_b < f_c || isinf(f_c)	# shrink interval to the left
-				swp = x_d
-				x_d = x_c
-				x_c = x_b
-				x_b = swp
-				
-				f_d = f_c
-				f_c = f_b
-				α_d = α_c
-				α_c = α_b
-
-				# calculate point b (which can never be infinite)
-				α_b = α_a + ϕ1*(α_d - α_a)
-				dx .= α_b.*d
-				x_b .= x .+ dx
-
-				if m > 0
-					if rank == m && !param.do_project_retract
-						# full rank, so do Newton Raphson
-						flag, nr_iter, _ = retract!(cval, xnew, c!, x_b, nr)
-						mtype = 0
-					else
-						# not full rank, so do primal penalty projection
-						flag, pb_iter, pcg_iter = retract!(cval, xnew, c!, x_b, pp)
-						mtype = 1
-					end
-
-					x_b .= xnew 	# update x_d with projected step
-				end
-
-				f_b = f(x_b)
-			else 						# shrink interval to the right
-				swp = x_a
-				x_a = x_b
-				x_b = x_c
-				x_c = swp
-				
-				f_a = f_b
-				f_b = f_c
-				α_a = α_b
-				α_b = α_c
-
-				# calcaulte point c
-				α_c = α_a + ϕ2*(α_d - α_a)
-				dx .= α_c.*d
-				x_c .= x .+ dx
-
-				if m > 0
-					if rank == m && !param.do_project_retract
-						# full rank, so do Newton Raphson
-						flag, nr_iter, _ = retract!(cval, xnew, c!, x_c, nr)
-						mtype = 0
-					else
-						# not full rank, so do primal penalty projection
-						flag, pb_iter, pcg_iter = retract!(cval, xnew, c!, x_c, pp)
-						mtype = 1
-					end
-
-					x_c .= xnew 	# update x_d with projected step
-				end
-
-				if flag > 0 || α_c > 1.0
-					f_c = Inf
-				else
-					f_c = f(x_c)
-				end
-			end
-		end
-
-		# println("Final values")
-		# @printf("xs: %f %f %f %f\n", x_a[1], x_b[1], x_c[1], x_d[1])
-		# @printf("αs: %f %f %f %f\n", α_a[1], α_b[1], α_c[1], α_d[1])
-		# @printf("fs: %f %f %f %f\n", f_a[1], f_b[1], f_c[1], f_d[1])
-
-		# assign final function, x, and α value
-		if f_b < f_c
-			xnew .= x_b
-			newf = f_b
-			α = α_b
+		if param.linesearch == armijo || param.disable_linesearch
+			# note - don't need to project g onto tangent manifold for dot product since d is guaranteed to live on tangent manifold
+			flag, iter1, iter2, newf, f_diff, step_diff, α = armijo!(xnew, x, d, g, f, fval, retract_method, cval, c!, param, armijo_work)
 		else
-			xnew .= x_c
-			newf = f_c
-			α = α_c
+			flag, iter1, iter2, newf, f_diff, step_diff, α = exact_linesearch!(xnew, x, d, f, fval, retract_method, cval, c!, param, exact_work)
 		end
 
-		tmp_n .= xnew .- x
-		step_diff = norm(tmp_n)
-		f_diff = abs(newf - fval)
-		flag = exact_iter_count
-
-		@label END_LINESEARCH
-
+		
 		# ----------------------- update x and function values ---------------------------
 		x .= xnew
 		fval = newf
 		append!(obj_values, fval)
-		param.disp == iter && print_iter(i+1, fval, norm(cval,Inf), f_diff, step_diff, steptype, tn_iter, tn_res, mtype, nr_iter, pb_iter, pcg_iter, α, flag)
+		param.disp == iter && print_iter(i+1, fval, norm(cval,Inf), f_diff, step_diff, steptype, tn_iter, tn_res, mtype, iter1, iter2, α, flag)
 		
 		i += 1
 
@@ -661,14 +252,12 @@ end
 	@printf("--------------------------------------------------------------------------------------------------------------\n")
 end
 
-@inline function print_iter(i, fval, normc, fstep, normx, steptype, tn_iter, tn_res, methodtype, nr_iter, pb_iter, pcg_iter, α, flag)
+@inline function print_iter(i, fval, normc, fstep, normx, steptype, tn_iter, tn_res, methodtype, iter1, iter2, α, flag)
 	# print out iteration information
 	if methodtype == 0
 		method = "NR"
-		iter = nr_iter
 	else
 		method = "PP"
-		iter = pb_iter
 	end
 
 	if steptype == 0
@@ -678,7 +267,7 @@ end
 	end
 
 	@printf("%7d | %10.3e  %8.1e  %8.1e  %8.1e  |  %s %4d %8.1e  |  %s %6d %6d  | %8.1e  %4d\n",
-		i, fval, normc, fstep, normx, stepname, tn_iter, tn_res, method, iter, pcg_iter, α, flag)
+		i, fval, normc, fstep, normx, stepname, tn_iter, tn_res, method, iter1, iter2, α, flag)
 
 	flush(Base.stdout)
 end

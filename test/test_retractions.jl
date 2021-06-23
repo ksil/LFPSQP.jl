@@ -72,7 +72,7 @@ end
 	Vt = Array(Vt);
 
 	nr = LFPSQP.NR(U, S, Vt, 1.0, 1000, LFPSQP.NRWork(m))
-	pp = LFPSQP.ProjPenalty(jac!, U, S, Vt, m, 0.01, 1.0, 100, 100, LFPSQP.ProjPenaltyWork(m, n))
+	pp = LFPSQP.ProjPenalty(jac!, U, S, Vt, m, 0.01, 1.0, 100, 200, LFPSQP.ProjPenaltyWork(m, n))
 
 	# generate random step and project onto tangent plane
 	step = randn(n)
