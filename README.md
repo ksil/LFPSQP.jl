@@ -19,7 +19,7 @@ f = x -> (1 - x[1])^2 + 100*(x[2] - x[1]^2)^2
 
 x0 = [0.0, 0.0]
 
-x, obj_values, λ_kkt, term_info = optimize(f, nothing, x0, 0)
+x, obj_values, λ_kkt, term_info = optimize(f, x0)
 ```
 
 Here, ``x`` is the final value of the variables, ``obj_values`` is a vector of objective function values at each iterate (including the initial one), ``λ_kkt`` is a vector of Lagrange multipliers (here an empty vector), and ``term_info`` is a struct that summarizes the optimization procedure. For example,

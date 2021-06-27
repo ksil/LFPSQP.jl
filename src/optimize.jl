@@ -108,6 +108,10 @@ function optimize(f, c!, x0::Vector{Float64}, m::Int64, param::LFPSQPParams=LFPS
 	optimize(f, c!, x0, nothing, nothing, m, param)
 end
 
+# unconstrained
+function optimize(f, x0::Vector{Float64}, param::LFPSQPParams=LFPSQPParams())
+	optimize(f, nothing, x0, nothing, nothing, 0, param)
+end
 
 
 # ------------------------------------------------------------------------------------------------
