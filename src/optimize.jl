@@ -1,4 +1,74 @@
-function optimize(f, c!, x0::Vector{Float64}, xl, xu, m::Int64, param::LFPSQPParams)
+# ---------------------------- Convenience functions ---------------------------------------------
+
+#=
+bounds and inequality constraints (d <= 0)
+
+m - size of c
+p - size of d
+
+increases the number of variables to (n + p) and the number of equality constraints
+to (m + p) via the introduction of slack variables
+
+=#
+function optimize(f, c!, d!, x0::Vector{Float64}, xl, xu, m::Int64, p::Int64, param::LFPSQPParams=LFPSQPParams())
+	# if no inequality constraints
+	if isnothing(d!) || p == 0
+		return optimize(f, c!, x0, xl, xu, m, param)
+	end
+
+	# fill auxiliary x0 with x0 and the initial values of the slack variables
+	n = length(x0)
+
+	x0_aux = similar(x0, n + p)
+	x0_aux[1:n] .= x0
+	d!(view(x0_aux, n+1:n+p), x0)
+
+	xl_aux = similar(xl, n + p)
+	xl_aux[1:n] .= xl
+	xl_aux[n+1:n+p] .= -Inf
+
+	xu_aux = similar(xu, n + p)
+	xu_aux[1:n] .= xu
+	xu_aux[n+1:n+p] .= 0.0
+
+	function f_aux(x)
+		return f(view(x, 1:n))
+	end
+
+	function c_aux!(cval, x)
+		if m > 0
+			c!(view(cval, 1:m), view(x, 1:n))
+		end
+
+		d!(view(cval, m+1:m+p), view(x, 1:n))
+		cval[m+1:m+p] .-= view(x, n+1:n+p)
+
+		return cval
+	end
+
+	# generate first-order functions
+	grad! = generate_gradient(f_aux, x0_aux)
+	jac! = generate_jacobian(c_aux!, x0_aux, m + p)
+
+	# generate Lagrangian Hessian function
+	x0_aux_dual = zeros(Dual{nothing,Float64,1}, length(x0_aux))
+	x0_aux_dual .= x0_aux
+
+	grad_dual! = generate_gradient(f_aux, x0_aux_dual)
+	jac_dual! = generate_jacobian(c_aux!, x0_aux_dual, m + p)
+
+	hess_lag_vec! = generate_hess_lag_vec(grad_dual!, jac_dual!, x0_aux, m + p)
+
+	# truncate output
+	x, obj_values, λ_kkt, term_info = optimize(f_aux, grad!, c_aux!, jac!, hess_lag_vec!, x0_aux, xl_aux, xu_aux, m + p, param)
+	trunc_x = x[1:n]
+
+	return trunc_x, obj_values, λ_kkt, term_info
+end
+
+
+# bounds and equality constraints
+function optimize(f, c!, x0::Vector{Float64}, xl, xu, m::Int64, param::LFPSQPParams=LFPSQPParams())
 
 	# generate first-order functions
 	grad! = generate_gradient(f, x0)
@@ -16,10 +86,14 @@ function optimize(f, c!, x0::Vector{Float64}, xl, xu, m::Int64, param::LFPSQPPar
 	optimize(f, grad!, c!, jac!, hess_lag_vec!, x0, xl, xu, m, param)
 end
 
-function optimize(f, c!, x0::Vector{Float64}, m::Int64, param::LFPSQPParams)
-	optimize(f, c!, x0, m, nothing, nothing, param)
+# no bounds on x
+function optimize(f, c!, x0::Vector{Float64}, m::Int64, param::LFPSQPParams=LFPSQPParams())
+	optimize(f, c!, x0, nothing, nothing, m, param)
 end
 
+
+
+# ------------------------------------------------------------------------------------------------
 
 function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, xl, xu, m::Int64, param::LFPSQPParams)
 	#= perform constrained optimization of the Helfrich energy
@@ -44,7 +118,8 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, xl, xu
 
 	n = length(x0)
 
-	# check for incommensurate lengths
+	# --------------------- check input data --------------------------------
+
 	if !isnothing(xl) && !isnothing(xu)
 		if !(length(xl) == length(xu) == length(x0))
 			error("xl, xu, and x0 must all be the same length")
@@ -52,7 +127,7 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, xl, xu
 	end
 
 	# set up inequality storage and check bounds
-	if (isnothing(xl) && isnothing(xu)) #|| (all(xl .== -Inf) && all(xu .== Inf))
+	if (isnothing(xl) && isnothing(xu)) || (all(xl .== -Inf) && all(xu .== Inf))
 		ineq = false
 
 		f_aug = f
