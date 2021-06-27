@@ -1,7 +1,7 @@
 # ---------------------------- Convenience functions ---------------------------------------------
 
 #=
-bounds and inequality constraints (d <= 0)
+bounds and inequality constraints (dl <= d <= du)
 
 m - size of c
 p - size of d
@@ -10,10 +10,14 @@ increases the number of variables to (n + p) and the number of equality constrai
 to (m + p) via the introduction of slack variables
 
 =#
-function optimize(f, c!, d!, x0::Vector{Float64}, xl, xu, m::Int64, p::Int64, param::LFPSQPParams=LFPSQPParams())
+function optimize(f, c!, d!, dl, du, x0::Vector{Float64}, xl, xu, m::Int64, p::Int64, param::LFPSQPParams=LFPSQPParams())
 	# if no inequality constraints
 	if isnothing(d!) || p == 0
 		return optimize(f, c!, x0, xl, xu, m, param)
+	end
+
+	if !(length(dl) == length(du) == p)
+		error("Bound vectors dl and du must be of size p")
 	end
 
 	# fill auxiliary x0 with x0 and the initial values of the slack variables
@@ -25,11 +29,11 @@ function optimize(f, c!, d!, x0::Vector{Float64}, xl, xu, m::Int64, p::Int64, pa
 
 	xl_aux = similar(xl, n + p)
 	xl_aux[1:n] .= xl
-	xl_aux[n+1:n+p] .= -Inf
+	xl_aux[n+1:n+p] .= dl
 
 	xu_aux = similar(xu, n + p)
 	xu_aux[1:n] .= xu
-	xu_aux[n+1:n+p] .= 0.0
+	xu_aux[n+1:n+p] .= du
 
 	function f_aux(x)
 		return f(view(x, 1:n))
@@ -66,6 +70,19 @@ function optimize(f, c!, d!, x0::Vector{Float64}, xl, xu, m::Int64, p::Int64, pa
 	return trunc_x, obj_values, λ_kkt, term_info
 end
 
+#=
+bounds and inequality constraints (d <= 0)
+
+m - size of c
+p - size of d
+
+increases the number of variables to (n + p) and the number of equality constraints
+to (m + p) via the introduction of slack variables
+
+=#
+function optimize(f, c!, d!, x0::Vector{Float64}, xl, xu, m::Int64, p::Int64, param::LFPSQPParams=LFPSQPParams())
+	return optimize(f, c!, d!, -Inf.*ones(p), zeros(p), x0, xl, xu, m, p, param)
+end
 
 # bounds and equality constraints
 function optimize(f, c!, x0::Vector{Float64}, xl, xu, m::Int64, param::LFPSQPParams=LFPSQPParams())
