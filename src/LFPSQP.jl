@@ -75,7 +75,6 @@ Base.show(io::IO, ti::TerminationInfo) = print(io, "TerminationInfo:\ncondition 
 	callback::Union{Nothing,Function} = nothing
 	callback_period::Int64 = 100
 	linesearch::LinesearchOption = armijo
-	armijo_period::Int64 = 100
 	do_newton::Bool = true
 	tn_maxiter::Int64 = 10000
 	tn_κ::Float64 = 0.5
