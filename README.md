@@ -35,7 +35,7 @@ condition = f_tol
 ||P(∇f)|| = 4.332627751789361e-5
     iters = 17
 ```
-where ``Δf`` is the change in objective function value at the last iteration, ``||Δx||`` is the 2-norm of increment of the variables at the last iteration, ``||P(∇f)||`` is the 2-norm of the objective function gradient, and ``iters`` is the total number of (outer) iterations taken.
+where ``condition`` is the termination criterion (here the change in objective function value was smaller than the default tolerance), ``Δf`` is the change in objective function value at the last iteration, ``||Δx||`` is the 2-norm of increment of the variables at the last iteration, ``||P(∇f)||`` is the 2-norm of the final objective function gradient, and ``iters`` is the total number of (outer) iterations taken.
 
 ## Equality constrained
 ```julia
