@@ -29,7 +29,7 @@ OVERWRITES
 xnew - with new x
 
 =#
-function armijo!(xnew, x, d, g, f, fval, retract_method, cval, c!, param::LFPSQPParams, work::ArmijoWork)
+function armijo!(xnew, x, n, d, g, f, fval, retract_method, cval, c!, param::LFPSQPParams, work::ArmijoWork)
 	f_diff = Inf
 	step_diff = Inf
 	α = param.α
@@ -45,11 +45,11 @@ function armijo!(xnew, x, d, g, f, fval, retract_method, cval, c!, param::LFPSQP
 	step = xtilde				# reuse xtilde for step size calculation at end
 
 
-	while f_diff > param.ϵ_f && step_diff > param.ϵ_x
+	while step_diff > param.ϵ_x
 		xtilde .= x .+ α.*d
 
 		# perform retraction
-		flag, iter1, iter2 = retract!(cval, xnew, c!, xtilde, retract_method)
+		flag, iter1, iter2 = retract!(cval, xnew, c!, xtilde, x, retract_method)
 		tot_iter1 += iter1
 		tot_iter2 += iter2
 
@@ -63,7 +63,7 @@ function armijo!(xnew, x, d, g, f, fval, retract_method, cval, c!, param::LFPSQP
 		step .= xnew .- x
 		newf = f(xnew)
 
-		step_diff = norm(step)
+		step_diff = norm(view(step, 1:n))	# only use first n values for step_diff
 		f_diff = abs(newf - fval)
 
 		# break conditions
@@ -104,7 +104,7 @@ OVERWRITES
 xnew - with new x
 
 =#
-function exact_linesearch!(xnew, x, d, f, fval, retract_method, cval, c!, param::LFPSQPParams, work::ExactLinesearchWork)
+function exact_linesearch!(xnew, x, n, d, f, fval, retract_method, cval, c!, param::LFPSQPParams, work::ExactLinesearchWork)
 
 	ϕ1 = (3 - sqrt(5))/2
 	ϕ2 = (sqrt(5) - 1)/2
@@ -158,7 +158,7 @@ function exact_linesearch!(xnew, x, d, f, fval, retract_method, cval, c!, param:
 		x_d .= x .+ (α_d + Δ).*d
 
 		# perform retraction
-		flag, iter1, iter2 = retract!(cval, xnew, c!, x_d, retract_method)
+		flag, iter1, iter2 = retract!(cval, xnew, c!, x_d, x, retract_method)
 		tot_iter1 += iter1
 		tot_iter2 += iter2
 
@@ -211,7 +211,7 @@ function exact_linesearch!(xnew, x, d, f, fval, retract_method, cval, c!, param:
 			x_c .= x .+ (ϕ1*α_c).*d
 
 			# perform retraction
-			flag, iter1, iter2 = retract!(cval, xnew, c!, x_c, retract_method)
+			flag, iter1, iter2 = retract!(cval, xnew, c!, x_c, x, retract_method)
 			tot_iter1 += iter1
 			tot_iter2 += iter2
 
@@ -248,7 +248,7 @@ function exact_linesearch!(xnew, x, d, f, fval, retract_method, cval, c!, param:
 	x_c .= x .+ α_c.*d
 
 	# perform retraction
-	flag, iter1, iter2 = retract!(cval, xnew, c!, x_c, retract_method)
+	flag, iter1, iter2 = retract!(cval, xnew, c!, x_c, x, retract_method)
 	tot_iter1 += iter1
 	tot_iter2 += iter2
 
@@ -283,7 +283,7 @@ function exact_linesearch!(xnew, x, d, f, fval, retract_method, cval, c!, param:
 			x_b .= x .+ α_b.*d
 
 			# perform retraction
-			flag, iter1, iter2 = retract!(cval, xnew, c!, x_b, retract_method)
+			flag, iter1, iter2 = retract!(cval, xnew, c!, x_b, x, retract_method)
 			tot_iter1 += iter1
 			tot_iter2 += iter2
 
@@ -306,7 +306,7 @@ function exact_linesearch!(xnew, x, d, f, fval, retract_method, cval, c!, param:
 			x_c .= x .+ α_c.*d
 
 			# perform retraction
-			flag, iter1, iter2 = retract!(cval, xnew, c!, x_c, retract_method)
+			flag, iter1, iter2 = retract!(cval, xnew, c!, x_c, x, retract_method)
 			tot_iter1 += iter1
 			tot_iter2 += iter2
 
@@ -332,7 +332,7 @@ function exact_linesearch!(xnew, x, d, f, fval, retract_method, cval, c!, param:
 	end
 
 	step .= xnew .- x
-	step_diff = norm(step)
+	step_diff = norm(view(step, 1:n))	# only use first n values for step_diff
 	f_diff = abs(newf - fval)
 
 	return flag, tot_iter1, tot_iter2, newf, f_diff, step_diff, α

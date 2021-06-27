@@ -85,6 +85,7 @@ end
 include("projcg.jl")
 include("autodiff_generators.jl")
 include("la_helper.jl")
+include("inequality_helper.jl")
 
 include("linesearch.jl")
 include("retractions.jl")

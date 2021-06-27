@@ -9,11 +9,13 @@ NRWork(m::Int) = NRWork(Array{Float64}(undef, m, m), [Array{Float64}(undef, m) f
 
 mutable struct NR
 	U::Array{Float64, 2}
-	S::Array{Float64, 1}
+	Σ::Array{Float64, 1}
 	Vt::Array{Float64, 2}
 	tol::Float64
 	maxiter::Int
 	work::NRWork
+	ineq::Bool
+	idata::InequalityData
 end
 
 struct ProjPenaltyWork
@@ -24,15 +26,16 @@ struct ProjPenaltyWork
 	z::Vector{Float64}
 	dx::Vector{Float64}
 	g::Vector{Float64}
+	cvalaug::Vector{Float64}
 end
 
-ProjPenaltyWork(m::Int, n::Int) = ProjPenaltyWork(Array{Float64}(undef, m, n), 
-	Array{Float64}(undef, m), [Array{Float64}(undef, n) for i in 1:5]...)
+ProjPenaltyWork(m::Int, n::Int, m_ineq::Int, n_ineq::Int) = ProjPenaltyWork(Array{Float64}(undef, m, n), 
+	Array{Float64}(undef, m_ineq), [Array{Float64}(undef, n_ineq) for i in 1:5]..., Array{Float64}(undef, m_ineq))
 
-mutable struct ProjPenalty{F <: Function}
+mutable struct ProjPenalty{F}
 	jac!::F
 	U::Array{Float64, 2}
-	S::Array{Float64, 1}
+	Σ::Array{Float64, 1}
 	Vt::Array{Float64, 2}
 	rank::Int
 	μ0::Float64
@@ -40,19 +43,36 @@ mutable struct ProjPenalty{F <: Function}
 	maxiter::Int
 	maxiter_pcg::Int
 	work::ProjPenaltyWork
+	ineq::Bool
+	idecomp::InequalityDecomp
+	idata::InequalityData
 end
 
 struct Euclidean
 end
 
-function retract!(cval, xnew, c!, xtilde, method::Euclidean)
+struct YRetract
+	idata::InequalityData
+end
+
+
+# -------------------------- Retraction functions -------------------------------------
+
+function retract!(cval, xnew, c!, xtilde, x, method::Euclidean)
 	xnew .= xtilde
 
 	return 0, 0, 0
 end
 
+function retract!(cval, xnew, c!, xtilde, x, method::YRetract)
+	xnew .= xtilde
+	y_retract!(xnew, x, method.idata)
 
-function retract!(cval, xnew, c!, xtilde, method::NR)
+	return 0, 0, 0
+end
+
+
+function retract!(cval, xnew, c!, xtilde, x, method::NR)
 	#= performs Newton-Raphson retraction for c(xtilde + U d) using the Jacobian V Σ'
 	which is evaluated at x
 
@@ -63,7 +83,8 @@ function retract!(cval, xnew, c!, xtilde, method::NR)
 	xnew - vector in which to store the result
 	c! - constraint function of the form c!(cval, x) where y is overwritten
 	xtilde - current value of x at step in tangent space
-	U, S, Vt - SVD decomposition
+	x - previous iterate
+	U, Σ, Vt - SVD decomposition
 	tol - function tolerance for termination
 	maxiter - maximum number of allowable iterations
 	work - NRWork struct for storage
@@ -79,7 +100,7 @@ function retract!(cval, xnew, c!, xtilde, method::NR)
 
 	# unpack
 	U = method.U
-	S = method.S
+	Σ = method.Σ
 	Vt = method.Vt
 	tol = method.tol
 	maxiter = method.maxiter
@@ -91,14 +112,20 @@ function retract!(cval, xnew, c!, xtilde, method::NR)
 	tmp_m2 = work.tmp_m2
 	dc = work.dc
 
-	m = length(S)
-	c!(cval, xtilde)
+	m = length(Σ)
 	xnew .= xtilde
+
+	if method.ineq
+		y_retract!(xnew, x, method.idata)
+		c!(cval, view(xnew, 1:length(xnew)÷2))
+	else
+		c!(cval, xnew)
+	end
 
 	# calculate inverse Jacobian Σ^(-1) V'
 	for j in 1:m
 		@fastmath @inbounds @simd for k in 1:m
-			D[k,j] = Vt[k,j] / S[k]
+			D[k,j] = Vt[k,j] / Σ[k]
 		end
 	end
 
@@ -114,7 +141,12 @@ function retract!(cval, xnew, c!, xtilde, method::NR)
 		gemv!('N', 1.0, U, tmp_m, 1.0, xnew)	# xnew = xnew + U d
 
 		# update function values
-		c!(tmp_m2, xnew)
+		if method.ineq
+			y_retract!(xnew, x, method.idata)
+			c!(tmp_m2, view(xnew, 1:length(xnew)÷2))
+		else
+			c!(tmp_m2, xnew)
+		end
 
 		# Broyden update
 		dc .= tmp_m2 .- cval
@@ -144,16 +176,15 @@ function retract!(cval, xnew, c!, xtilde, method::NR)
 	return flag, i, 0
 end
 
-function pcg!(μ, J, U, S, Vt, rank, x, r, p, z, tmp_m, tol, maxiter)
+function pcg!(μ, J, M!, x, r, p, z, tmp_m, tol, maxiter)
 	#= performs preconditioned conjugate gradient to solve Ax = b with
 		A = J' J + μI
-		preconditioned with (J0' J0 + μΙ)^(-1) = 1/μ Ι - 1/μ UΣ(μI + Σ^2)^(-1) Σ' U'
+		preconditioned with M!
 
 		INPUT
 		μ - factor for projection
 		J - the Jacobian of the constraints
-		U, S, Vt - SVD decomposition of J(x_i), used for preconditioning
-		rank - SVD rank
+		M! - function for preconditioning of the form M!(z, r)
 		x - initial guess
 		r - residual, should equal b (the right-hand side) using an initial guess of x=0
 		p, z - work vectors of size n for PCG
@@ -168,21 +199,14 @@ function pcg!(μ, J, U, S, Vt, rank, x, r, p, z, tmp_m, tol, maxiter)
 		flag - 0 = success, 1 = maxiter reached
 	=#
 
-	m = length(S)
-
 	norm_res = Inf
 	ρ = 1.0               	# set ρ and p initialy to 1.0 and 0.0, as done in IterativeSolvers.jl
 	fill!(p, 0.0)
 
 	i = 0
 	while norm_res > tol && i < maxiter
-		# precondition - z = M^{-1} r
-		z .= r
-		kgemv!('T', rank, 1.0, U, r, 0.0, tmp_m)
-		@fastmath @inbounds @simd for j in 1:rank
-			tmp_m[j] *= S[j]*S[j] / (μ + S[j]*S[j])
-		end
-		kgemv!('N', rank, -1/μ, U, tmp_m, 1/μ, z)
+		# precondition - z = "A^{-1}" r
+		M!(z, r)
 
 		# update ρ = r^T z
 		ρ_prev = ρ
@@ -194,8 +218,10 @@ function pcg!(μ, J, U, S, Vt, rank, x, r, p, z, tmp_m, tol, maxiter)
 
 		# store A*p in z
 		z .= p
-		gemv!('N', 1.0, J, p, 0.0, tmp_m)
-		gemv!('T', 1.0, J, tmp_m, μ, z)
+		mul!(tmp_m, J, p)
+		mul!(z, J', tmp_m, 1.0, μ)
+		# gemv!('N', 1.0, J, p, 0.0, tmp_m)
+		# gemv!('T', 1.0, J, tmp_m, μ, z)
 
 		# update α = r^T z / (p^T A p)
 		α = ρ / dot(p, z)
@@ -219,7 +245,24 @@ function pcg!(μ, J, U, S, Vt, rank, x, r, p, z, tmp_m, tol, maxiter)
 	return flag, i
 end
 
-function retract!(cval, xnew, c!, xtilde, method::ProjPenalty{F}) where F
+function proj_precondition!(z, r, μ, U, Σ, rank, tmp_m)
+	z .= r
+	kgemv!('T', rank, 1.0, U, r, 0.0, tmp_m)
+	@fastmath @inbounds @simd for j in 1:rank
+		tmp_m[j] *= Σ[j]*Σ[j] / (μ + Σ[j]*Σ[j])
+	end
+	kgemv!('N', rank, -1/μ, U, tmp_m, 1/μ, z)
+
+	return z
+end
+
+function no_precondition(z, r)
+	z .= r
+
+	return z
+end
+
+function retract!(cval, xnew, c!, xtilde, x, method::ProjPenalty{F}) where F
 
 	#= performs primal penalty minimization of 
 		1/2 || c(z) ||^2 + μ/2 || z - xtilde ||^2
@@ -233,8 +276,9 @@ function retract!(cval, xnew, c!, xtilde, method::ProjPenalty{F}) where F
 	xnew - vector in which to store the result
 	c! - constraint function of the form c!(cval, x) where y is overwritten
 	xtilde - current x
+	x - previous iterate
 	jac! - function to calculate Jacobian of the form jac!(J, cval, x)
-	U, S, Vt - SVD decomposition of Jacobian at xtilde
+	U, Σ, Vt - SVD decomposition of Jacobian at xtilde
 	rank - SVD rank
 	μ0 - initial penalty strength μ0
 	tol - function tolerance for termination
@@ -255,7 +299,7 @@ function retract!(cval, xnew, c!, xtilde, method::ProjPenalty{F}) where F
 	# unpack
 	jac! = method.jac!
 	U = method.U
-	S = method.S
+	Σ = method.Σ
 	Vt = method.Vt
 	rank = method.rank
 	μ0 = method.μ0
@@ -263,6 +307,8 @@ function retract!(cval, xnew, c!, xtilde, method::ProjPenalty{F}) where F
 	maxiter = method.maxiter
 	maxiter_pcg = method.maxiter_pcg
 	work = method.work
+	idecomp = method.idecomp
+	idata = method.idata
 
 	# unpack work variables
 	J = work.J
@@ -272,7 +318,10 @@ function retract!(cval, xnew, c!, xtilde, method::ProjPenalty{F}) where F
 	z = work.z
 	dx = work.dx
 	g = work.g
+	cvalaug = work.cvalaug
 
+	# matrix to use for multiplication
+	fulljac = method.ineq ? idecomp' : J
 
 	flag = 0 # return flag
 
@@ -280,29 +329,50 @@ function retract!(cval, xnew, c!, xtilde, method::ProjPenalty{F}) where F
 	xnew .= xtilde
 	μ = μ0
 
+	# store length of "x" part
+	n = method.ineq ? length(xnew) ÷ 2 : length(xnew)
+	m = length(Σ)
 
 	i = 0
 	pcg_iter_count = 0
 	while i < maxiter
 		# calculate new constraint function values and Jacobian
-	    jac!(J, cval, xnew)
+		jac!(J, cval, view(xnew, 1:n))
+    	curtol = norm(cval, Inf)
+
+	    if method.ineq
+	    	inequality_gradient!(idecomp, xnew, idata)
+
+	    	# update c Jacobian in idecomp
+	    	transpose!(idecomp.Jct, J)
+
+	    	# calculate inequality constraint norm
+	    	calculate_h!(cvalaug, xnew, idata)
+
+	    	curtol = max(curtol, norm(cvalaug, Inf))
+	    end
+
+	    # fill last m values of cvalaug with cval
+	    cvalaug[end-m+1:end] .= cval
 
 		# check if tolerance met
-		if norm(cval, Inf) < tol
+		if curtol < tol
 			break
 		end
 
 	    # calculate right-hand side g = (J' c + μ*(xnew - xtilde))
 	    g .= xnew .- xtilde
 
-	    prev_dist2 = dot(g, g)	# for use below
+	    prev_obj_val = dot(cvalaug, cvalaug) + μ*dot(g, g)	# for use below
 
-	    gemv!('T', 1.0, J, cval, μ, g)
+	    # gemv!('T', 1.0, fulljac, cvalaug, μ, g)
+	    mul!(g, fulljac', cvalaug, 1.0, μ)
 	    fill!(dx, 0.0)
 	    r .= g
 
 	    # do Newton step = (J'J + μI) \ r
-	    pcg_flag, pcg_i = pcg!(μ, J, U, S, Vt, rank, dx, r, p, z, tmp_m, tol, maxiter_pcg)
+	    # M! = (z, r) -> proj_precondition!(z, r, μ, U, Σ, rank, tmp_m)
+	    pcg_flag, pcg_i = pcg!(μ, fulljac, no_precondition, dx, r, p, z, tmp_m, tol, maxiter_pcg)
 	    pcg_iter_count += pcg_i
 	    if pcg_flag > 0
 	    	# do no further iterations if pcg exceeds the maximum iteration count
@@ -314,22 +384,37 @@ function retract!(cval, xnew, c!, xtilde, method::ProjPenalty{F}) where F
 	    p .= xnew
 	    ar_dot = -dot(g, dx)			# step*gradient
 
-	    prev_obj_val = dot(cval, cval) + μ*prev_dist2
 	    α = 1.0
 
 	    xnew .-= α.*dx
 	    g .= xnew .- xtilde
 	    dist2 = dot(g, g)
-	    c!(cval, xnew)
+	    c!(cval, view(xnew, 1:n))
+
+	    # update inequality constraint function values
+	    if method.ineq
+	    	calculate_h!(cvalaug, xnew, idata)
+	    end
+
+	    cvalaug[end-m+1:end] .= cval
+
 
 	    armijo_count = 0
-	    while dot(cval, cval) + μ*dist2 > prev_obj_val + 1e-4*α*ar_dot
+	    while dot(cvalaug, cvalaug) + μ*dist2 > prev_obj_val + 1e-4*α*ar_dot
 	    	# update values with new step size
 	    	α /= 2
 	    	xnew .= p .- α.*dx
 		    g .= xnew .- xtilde
 		    dist2 = dot(g, g)
-		    c!(cval, xnew)
+
+		    c!(cvalaug, view(xnew, 1:n))
+
+		    # update inequality constraint function values
+		    if method.ineq
+		    	calculate_h!(cvalaug, xnew, idata)
+		    end
+
+	    	cvalaug[end-m+1:end] .= cval
 
 		    # break with error if Armijo iteration count is excessive
 	    	armijo_count += 1
@@ -343,7 +428,7 @@ function retract!(cval, xnew, c!, xtilde, method::ProjPenalty{F}) where F
 
 	    # update iteration count and μ
 		i += 1
-		μ = min(μ*0.1, norm(cval))
+		μ = min(μ*0.1, norm(cvalaug))
 		# μ *= 0.1
 	end
 
@@ -353,4 +438,63 @@ function retract!(cval, xnew, c!, xtilde, method::ProjPenalty{F}) where F
 
 	return flag, i, pcg_iter_count
 
+end
+
+
+
+# ---------------------------- Inequality retractions ---------------------------------------
+
+# retract onto the inequality constraints (y) first and overwrite results in xnewaug
+# xnewaug - "xtilde" to be overwritten
+# xaug - point at which retraction is based
+# idata
+function y_retract!(xnewaug, xaug, idata::InequalityData)
+	n = length(xaug) ÷ 2
+
+	xnew = view(xnewaug, 1:n)
+	ynew = view(xnewaug, n+1:2*n)
+	x = view(xaug, 1:n)
+	y = view(xaug, n+1:2*n)
+
+	for i in 1:n
+		if idata.isline[i]
+			# don't need to do anything since step should be in tangent plane
+			# but can update to avoid numerical drift
+			xnew[i] = ynew[i]
+		elseif idata.isparabola[i]
+			# retract back to parabola with a second-order retractor
+			s = idata.s[i]
+			r = idata.r[i]
+
+			g = (-s, -2(y[i] - r))			# gradient at x
+			ng = norm(g)
+			ux = x[i] - xnew[i] + g[1]/ng
+			uy = y[i] - ynew[i] + g[2]/ng
+
+			# solve quadratic and calculate step length, γ, back to parabola
+			a = s*uy^2
+			b = ux + 2*s*(ynew[i] - r)*uy
+			c = xnew[i] + s*(ynew[i] - r)^2 - r
+
+			a1 = -b/(2*a)
+			a2 = sqrt(b^2 - 4*a*c)/(2*a)
+
+			γ = min(a1 + a2, a1 - a2)
+
+			# update xnew and ynew
+			xnew[i] += γ*ux
+			ynew[i] += γ*uy
+		else # iscircle
+			# retract to circle via simple projection
+			c = idata.r[i]
+			ρ = sqrt(idata.t[i])
+
+			dist = sqrt((xnew[i] - c)^2 + (ynew[i] - c)^2)
+
+			ynew[i] = c + ρ*(ynew[i] - c)/dist
+			xnew[i] = c + ρ*(xnew[i] - c)/dist
+		end
+	end
+
+	return xnew
 end

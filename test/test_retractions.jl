@@ -71,8 +71,8 @@ end
 	U, S, Vt = svd(Array(J'))
 	Vt = Array(Vt);
 
-	nr = LFPSQP.NR(U, S, Vt, 1.0, 1000, LFPSQP.NRWork(m))
-	pp = LFPSQP.ProjPenalty(jac!, U, S, Vt, m, 0.01, 1.0, 100, 200, LFPSQP.ProjPenaltyWork(m, n))
+	nr = LFPSQP.NR(U, S, Vt, 1.0, 1000, LFPSQP.NRWork(m), false, LFPSQP.InequalityData())
+	pp = LFPSQP.ProjPenalty(jac!, U, S, Vt, m, 0.01, 1.0, 100, 200, LFPSQP.ProjPenaltyWork(m, n, m, n), false, LFPSQP.InequalityDecomp(), LFPSQP.InequalityData())
 
 	# generate random step and project onto tangent plane
 	step = randn(n)
@@ -84,54 +84,17 @@ end
 	xnew = zeros(n)
 
 	c!(cval, xtilde)
-	@show norm(cval)
-
-
-	#################### plotting #############################
-	# θs = range(0, 2*π, length=200)
-	# plot(centers[1,1] .+ Rs[1].*cos.(θs), centers[2,1] .+ Rs[1].*sin.(θs), "b")
-	# plot([x0[1]], [x0[2]], "r.")
-	# plot([xtilde[1]], [xtilde[2]], "g.")
-	# ys = -0.01:1e-5:-0.003
-	# cvals = zeros(length(ys))
-
-	# for i = 1:length(ys)
-	# 	c!(view(cvals, i), xtilde + U*ys[i])
-	# end
-
-	# plot(ys, cvals)
-
-
-	# B = J*U
-	# c!(cval, xtilde)
-	# xnew .= xtilde
-	# ynew = zeros(m)
-
-	# for i = 1:500
-	# 	ystep = -B\ cval
-	# 	ynew .+= ystep
-
-	# 	xnew .+= U*ystep
-	# 	c!(cval, xnew)
-
-	# 	B .= B .+ (cval*ystep')/dot(ystep, ystep)
-
-	# 	jac!(J, cval, xnew)
-	# 	realB = J*U
-	# 	@show maximum(abs.(B - realB)), norm(cval)
-	# end
-
-	# return
+	# @show norm(cval)
 
 
 	@testset "Newton retraction" begin
 		for tol in [1e-6, 1e-8]
 			nr.tol = tol
 
-			flag, i, _ = LFPSQP.retract!(cval, xnew, c!, xtilde, nr)
+			flag, i, _ = LFPSQP.retract!(cval, xnew, c!, xtilde, x0, nr)
 			c!(cval2, xnew)
 
-			@show flag, i
+			# @show flag, i
 			@test flag == 0 && norm(cval, Inf) < tol
 			@test all(cval .== cval2)			# cval should be c! evaluated at xnew
 			@test all(xtilde .== xtilde_copy)
@@ -139,15 +102,53 @@ end
 		end
 	end
 
+	@testset "CG iteration" begin
+		# solve (μI + J'J)x = b
+		J = randn(m, n)
+		p = zeros(n)
+		z = zeros(n)
+		tmp_m = zeros(m)
+		tol = 1e-6
+		maxiter = 100
+
+		for μ in [1e-1, 1e-2, 1e-4]
+			x = zeros(n) # initial guess
+			b = randn(n)
+			r = copy(b)
+
+			M! = LFPSQP.no_precondition
+
+			flag, i = LFPSQP.pcg!(μ, J, M!, x, r, p, z, tmp_m, tol, maxiter)
+
+			@test flag == 0
+			@test norm(r) < tol
+			@test norm(μ.*x + J'*(J*x) - b) < tol
+
+			# test exact preconditioning
+			x = zeros(n) # initial guess
+			b = randn(n)
+			r = copy(b)
+
+			exact_inverse = inv(μ*Matrix(I, n, n) + J'*J)
+			M!(z, r) = z .= (μ*Matrix(I, n, n) + J'*J) \ r
+
+			flag, i = LFPSQP.pcg!(μ, J, M!, x, r, p, z, tmp_m, tol, maxiter)
+
+			@test flag == 0 && i == 1
+			@test norm(r) < tol
+			@test norm(μ.*x + J'*(J*x) - b) < tol
+		end
+	end
+
 
 	@testset "Project penalty retraction" begin
-		for tol in [1e-6, 1e-8]
+		for tol in [1e-6, 1e-8, 1e-10]
 			pp.tol = tol
 
-			flag, i, pcg_i = LFPSQP.retract!(cval, xnew, c!, xtilde, pp)
+			flag, i, pcg_i = LFPSQP.retract!(cval, xnew, c!, xtilde, x0, pp)
 			c!(cval2, xnew)
 
-			@show flag, i, pcg_i
+			# @show flag, i, pcg_i
 			@test flag == 0 && norm(cval, Inf) < tol
 			@test all(cval .== cval2)			# cval should be c! evaluated at xnew
 			@test all(xtilde .== xtilde_copy)

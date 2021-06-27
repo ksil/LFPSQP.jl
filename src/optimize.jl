@@ -1,4 +1,4 @@
-function optimize(f, c!, x0::Vector{Float64}, m::Int64, param::LFPSQPParams)
+function optimize(f, c!, x0::Vector{Float64}, xl, xu, m::Int64, param::LFPSQPParams)
 
 	# generate first-order functions
 	grad! = generate_gradient(f, x0)
@@ -13,11 +13,15 @@ function optimize(f, c!, x0::Vector{Float64}, m::Int64, param::LFPSQPParams)
 
 	hess_lag_vec! = generate_hess_lag_vec(grad_dual!, jac_dual!, x0, m)
 
-	optimize(f, grad!, c!, jac!, hess_lag_vec!, x0, m, param)
+	optimize(f, grad!, c!, jac!, hess_lag_vec!, x0, xl, xu, m, param)
+end
+
+function optimize(f, c!, x0::Vector{Float64}, m::Int64, param::LFPSQPParams)
+	optimize(f, c!, x0, m, nothing, nothing, param)
 end
 
 
-function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int64, param::LFPSQPParams)
+function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, xl, xu, m::Int64, param::LFPSQPParams)
 	#= perform constrained optimization of the Helfrich energy
 
 	INPUT
@@ -38,53 +42,107 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 
 	=#
 
-	# output arrays
-	x = copy(x0)
-	obj_values = zeros(0)
 	n = length(x0)
+
+	# check for incommensurate lengths
+	if !isnothing(xl) && !isnothing(xu)
+		if !(length(xl) == length(xu) == length(x0))
+			error("xl, xu, and x0 must all be the same length")
+		end
+	end
+
+	# set up inequality storage and check bounds
+	if (isnothing(xl) && isnothing(xu)) #|| (all(xl .== -Inf) && all(xu .== Inf))
+		ineq = false
+
+		f_aug = f
+
+		ineqdata = InequalityData()
+	else
+		ineq = true
+
+		if any(xl .> xu)
+			error("Infeasible: lower bounds cannot be greater than upper bounds")
+		end
+
+		f_aug = x -> f(view(x, 1:n))
+
+		PJct = Array{Float64}(undef, 2*n, m)
+		λy_kkt = zeros(n)
+
+		ineqdata = InequalityData(xl, xu)
+	end
+
+	n_ineq = ineq ? 2*n : n
+	m_ineq = ineq ? m+n : m
+
+	# output arrays
+	x = Array{Float64}(undef, n_ineq)
+	x[1:n] .= x0
+
+	# find initial values for y
+	if ineq
+		generate_initial_y!(x, ineqdata)
+	end
+
+	obj_values = zeros(0)
 
 	# ---------- storage for steps -----------------
 	xtilde = similar(x)					# temporary step
 	xnew = similar(x)
 	Jc = Array{Float64}(undef, m, n) 	# Jacobian of constraints
 	Jct = Array{Float64}(undef, n, m)	# gradient of constraints (Jacobian transpose)
-	g = Array{Float64}(undef, n)		# gradient of objective function
-	d = Array{Float64}(undef, n)		# step to take
-	dx = Array{Float64}(undef, n)
+	g = zeros(n_ineq)					# gradient of objective function (0 w.r.t. y if inequalities present)
+	d = Array{Float64}(undef, n_ineq)	# step to take
 
-	tmp_n = Array{Float64}(undef, n)	# temp vectors
-	tmp_m = Array{Float64}(undef, m)
+	tmp_n = Array{Float64}(undef, n_ineq)	# temp vectors
+	tmp_m = Array{Float64}(undef, m_ineq)
 	
 	cval = zeros(m)						# to store constraint values
 	λ_kkt = zeros(m)
 	term_cond::TerminationCondition = f_tol
 
 	# storage and work vectors for SVD
-	U = Array{Float64}(undef, n, m)
-	S = Vector{Float64}(undef, m)
+	U = Array{Float64}(undef, n_ineq, m)
+	Σ = Vector{Float64}(undef, m)
 	Vt = Array{Float64}(undef, m, m)
 	svdwork = Vector{Float64}(undef, 1)
 
 	if m > 0
-		ksvd!(Jct,U,S,Vt,svdwork,true)		# calculate work vector
+		ksvd!(ineq ? PJct : Jct, U, Σ, Vt, svdwork, true)		# calculate work vector
 	end
 
-	newton_d = Array{Float64}(undef, n)				# truncated Newton steps
-	newton_Δλ = Array{Float64}(undef, m)
-	newton_b2 = zeros(m)
-	projcgwork = ProjCGWork(n, m)
+	newton_d = Array{Float64}(undef, n_ineq)				# truncated Newton steps
+	newton_Δλ = Array{Float64}(undef, m_ineq)
+	newton_b2 = zeros(m_ineq)
+	projcgwork = ProjCGWork(n_ineq, m_ineq)
 	prev_grad_norm = 0.0					# forces tol to be κ*grad_norm initially
 	grad_norm = Inf
-	newton_map = LinearMap{Float64}((dest, src) -> hess_lag_vec!(dest, src, x, λ_kkt), n, ismutating=true, issymmetric=true)
+
+	# inequality decomposition
+	if ineq
+		ineqdecomp = InequalityDecomp(U, Σ, Vt, [Array{Float64}(undef, n) for i in 1:3]..., Jct, m)
+	else
+		ineqdecomp = InequalityDecomp(U, Σ, Vt, [zeros(0) for i in 1:3]..., Jct, m)
+	end
+	ineqproject = InequalityDecompProject(ineqdecomp)
+
+	# construct Linear map to be used for Newton steps
+	if ineq
+		newton_map = LinearMap{Float64}((dest, src) -> augmented_hess_lag_vec!(dest, src, hess_lag_vec!, x, λ_kkt, λy_kkt, ineqdata), 2*n, ismutating=true, issymmetric=true)
+	else
+		newton_map = LinearMap{Float64}((dest, src) -> hess_lag_vec!(dest, src, x, λ_kkt), n, ismutating=true, issymmetric=true)
+	end
 
 	# retraction methods
-	nr = NR(U, S, Vt, param.ϵ_c, param.maxiter_retract, NRWork(m))
-	pp = ProjPenalty(jac!, U, S, Vt, m, param.μ0, param.ϵ_c, param.maxiter_retract, param.maxiter_pcg, ProjPenaltyWork(m, n))
+	nr = NR(U, Σ, Vt, param.ϵ_c, param.maxiter_retract, NRWork(m), ineq, ineqdata)
+	pp = ProjPenalty(jac!, U, Σ, Vt, m, param.μ0, param.ϵ_c, param.maxiter_retract, param.maxiter_pcg, ProjPenaltyWork(m, n, m_ineq, n_ineq), ineq, ineqdecomp, ineqdata)
 	euc = Euclidean()
+	yr = YRetract(ineqdata)
 
 	# linesearch work structs
-	armijo_work = ArmijoWork(n)
-	exact_work = ExactLinesearchWork(n)
+	armijo_work = ArmijoWork(n_ineq)
+	exact_work = ExactLinesearchWork(n_ineq)
 
 	# ----------------------- Calculate gradient -------------------------
 	i = 0
@@ -92,17 +150,18 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 	step_diff = Inf
 	kkt_diff = Inf
 
-	fval = f(x)
+	fval = f_aug(x)
 	append!(obj_values, fval)
 
 	param.disp == iter && print_iter_header()
 
 	while true
 		# calculate gradient at current point
-		grad!(g, x)
+		grad!(view(g, 1:n), view(x, 1:n))
 
 		# calculate step and add random noise (if set)
-		d .= -g
+		d .= -1.0 .* g
+
 		if param.β > 0 
 			randn!(tmp_n)
 
@@ -114,25 +173,49 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 			end
 		end
 
+		if ineq
+			# calculate gradients of inequality constraints
+			inequality_gradient!(ineqdecomp, x, ineqdata)
+		end
+
 		rank = m
 		if m > 0
 			# calculate Jacobian at current point and find SVD
-			jac!(Jc, cval, x)
+			jac!(Jc, cval, view(x, 1:n))
 			transpose!(Jct, Jc)
 
-			ksvd!(Jct,U,S,Vt,svdwork)		# O(Nm^2)
+			if ineq
+				# project Jacobian orthogonal to inequality constraints
+				PJct[1:n, :] .= (1.0 .- ineqdecomp.Dx.*ineqdecomp.Dx) .* Jct
+				PJct[n+1:2*n, :] .= -1.0 .* ineqdecomp.Dy.*ineqdecomp.Dx .* Jct
+
+				ksvd!(PJct, U, Σ, Vt, svdwork)		# O(Nm^2)
+			else
+				ksvd!(Jct, U, Σ, Vt, svdwork)		# O(Nm^2)
+			end
 
 			# find rank of constraint Jacobian
-			for (j, a) in enumerate(S)
+			for (j, a) in enumerate(Σ)
 				if a < param.ϵ_rank
 					rank = j - 1
 					break
 				end
 			end
 
-			# project step onto tangent manifold (using only rank vectors in U)
-			kgemv!('T', rank, 1.0, U, d, 0.0, tmp_m)		# tmp_m = U' d
-			kgemv!('N', rank, -1.0, U, tmp_m, 1.0, d)		# d = d - U*tmp_m
+			# project step onto tangent space if no inequalities present
+			if !ineq
+				kgemv!('T', rank, 1.0, U, d, 0.0, tmp_m)		# tmp_m = U' d
+				kgemv!('N', rank, -1.0, U, tmp_m, 1.0, d)		# d = d - U*tmp_m
+			end
+		end
+
+		# project step onto tangent space for inequalities
+		if ineq
+			# update rank in inequality decomposition
+			ineqdecomp.rank = rank
+
+			mul!(tmp_m, ineqproject', d)				# tmp_m = Q'd
+			mul!(d, ineqproject, tmp_m, -1.0, 1.0)		# d = d - Q*tmp_m
 		end
 
 		kkt_diff = norm(d, Inf)
@@ -146,10 +229,12 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 		tn_res = 0.0
 
 		# calculate λ_kkt
-		if m > 0
+		if ineq
+			calculate_λ_kkt!(λ_kkt, λy_kkt, tmp_m, ineqdecomp)
+		elseif m > 0
 			# tmp_m contains U'd = -U'g
 			@inbounds @simd for j = 1:rank
-				tmp_m[j] /= S[j]
+				tmp_m[j] /= Σ[j]
 			end
 			@inbounds @simd for j = rank+1:m
 				tmp_m[j] = 0.0
@@ -179,16 +264,22 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 
 		if param.do_newton
 			# prepare views
-			Uview = view(U, :, 1:rank)
-			newton_b2_view = view(newton_b2, 1:rank)
+			if ineq
+				Qview = ineqproject
+				newton_b2_view = view(newton_b2, 1:n+rank)
+			else
+				Qview = view(U, :, 1:rank)
+				newton_b2_view = view(newton_b2, 1:rank)
+			end
 			
+			# calculate tolerance for truncated newton step
 			grad_norm = norm(d)
 			tol = param.tn_κ*min(1, (grad_norm/prev_grad_norm)^2)*grad_norm
 			
 			prev_grad_norm = grad_norm  	# update prev_grad_norm for next time
 
 			# take truncated newton step using ProjCG
-			tn_iter, tn_res = projcg!(newton_d, newton_Δλ, newton_map, Uview, d, newton_b2_view,
+			tn_iter, tn_res = projcg!(newton_d, newton_Δλ, newton_map, Qview, d, newton_b2_view,
 				tol=tol, maxit=param.tn_maxiter, work=projcgwork)
 
 
@@ -212,16 +303,21 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 				mtype = 1
 			end
 		else
-			retract_method = euc
-			mtype = 0
+			if ineq
+				retract_method = yr
+				mtype = 0
+			else
+				retract_method = euc
+				mtype = 0
+			end
 		end
 
 
 		if param.linesearch == armijo || param.disable_linesearch
 			# note - don't need to project g onto tangent manifold for dot product since d is guaranteed to live on tangent manifold
-			flag, iter1, iter2, newf, f_diff, step_diff, α = armijo!(xnew, x, d, g, f, fval, retract_method, cval, c!, param, armijo_work)
+			flag, iter1, iter2, newf, f_diff, step_diff, α = armijo!(xnew, x, n, d, g, f_aug, fval, retract_method, cval, c!, param, armijo_work)
 		else
-			flag, iter1, iter2, newf, f_diff, step_diff, α = exact_linesearch!(xnew, x, d, f, fval, retract_method, cval, c!, param, exact_work)
+			flag, iter1, iter2, newf, f_diff, step_diff, α = exact_linesearch!(xnew, x, n, d, f_aug, fval, retract_method, cval, c!, param, exact_work)
 		end
 
 		
@@ -244,7 +340,7 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, m::Int
 		@warn "Maximum # of outer iterations reached"
 	end
 
-	return x, obj_values, λ_kkt, TerminationInfo(term_cond, f_diff, step_diff, kkt_diff, i)
+	return x[1:n], obj_values, λ_kkt, TerminationInfo(term_cond, f_diff, step_diff, kkt_diff, i)
 end
 
 @inline function print_iter_header()

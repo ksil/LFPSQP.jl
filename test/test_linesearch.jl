@@ -1,5 +1,7 @@
 @testset verbose=true "Linesearch                  " begin
 
+	n = 1
+
 	f = x -> x[1]^2
 
 	x = [-0.23]
@@ -10,7 +12,7 @@
 	cval = zeros(0)
 
 	@testset "Armijo" begin
-		flag, tot_iter1, tot_iter2, newf, f_diff, step_diff, α = LFPSQP.armijo!(xnew, x, d, g, f, fval, LFPSQP.Euclidean(), cval, c!, LFPSQPParams(linesearch=LFPSQP.armijo), LFPSQP.ArmijoWork(1))
+		flag, tot_iter1, tot_iter2, newf, f_diff, step_diff, α = LFPSQP.armijo!(xnew, x, n, d, g, f, fval, LFPSQP.Euclidean(), cval, nothing, LFPSQPParams(linesearch=LFPSQP.armijo), LFPSQP.ArmijoWork(1))
 
 		@test flag == tot_iter1 == tot_iter2 == 0
 		@test x[1] == -0.23							# ensure value not changed
@@ -20,7 +22,7 @@
 	end
 
 	@testset "Exact" begin
-		flag, tot_iter1, tot_iter2, newf, f_diff, step_diff, α = LFPSQP.exact_linesearch!(xnew, x, d, f, fval, LFPSQP.Euclidean(), cval, c!, LFPSQPParams(linesearch=LFPSQP.armijo), LFPSQP.ExactLinesearchWork(1))
+		flag, tot_iter1, tot_iter2, newf, f_diff, step_diff, α = LFPSQP.exact_linesearch!(xnew, x, n, d, f, fval, LFPSQP.Euclidean(), cval, nothing, LFPSQPParams(linesearch=LFPSQP.armijo), LFPSQP.ExactLinesearchWork(1))
 		
 		@test flag == tot_iter1 == tot_iter2 == 0
 		@test x[1] == -0.23							# ensure value not changed
