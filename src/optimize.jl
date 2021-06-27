@@ -245,7 +245,10 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, xl, xu
 	fval = f_aug(x)
 	append!(obj_values, fval)
 
+	m > 0 && c!(cval, view(x, 1:n))
+
 	param.disp == iter && print_iter_header()
+	param.disp == iter && print_first_line(fval, norm(cval, Inf))
 
 	while true
 		# calculate gradient at current point
@@ -438,6 +441,10 @@ end
 @inline function print_iter_header()
 	@printf("   step |          f     ||c||      |Δf|    ||Δx||  |   S iter      res  |   M   iter  (pcg)  |        α  flag\n")
 	@printf("--------------------------------------------------------------------------------------------------------------\n")
+end
+
+@inline function print_first_line(fval, normc)
+	@printf("      0 | %10.3e  %8.1e                      |                    |                    |               \n", fval, normc)
 end
 
 @inline function print_iter(i, fval, normc, fstep, normx, steptype, tn_iter, tn_res, methodtype, iter1, iter2, α, flag)
