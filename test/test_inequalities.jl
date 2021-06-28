@@ -195,7 +195,7 @@
 		cvalaug = zeros(n+m)
 		LFPSQP.calculate_h!(cvalaug, xnewaug, idata)
 
-		@test all(isapprox.(cvalaug, 0.0, atol=3e-15))
+		@test all(isapprox.(cvalaug, 0.0, atol=1e-13))
 		@test all(xaug .== xaugcopy)					# ensure xaug not overwritten
 	end
 end

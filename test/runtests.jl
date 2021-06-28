@@ -1,11 +1,19 @@
 using Test
 using LinearAlgebra
 using LFPSQP
-using Profile
 import ForwardDiff.Dual
 
-# Projected CG tests
+# projected CG tests
 include("test_cg.jl")
 
-# Gradient and Hessian generator function tests
+# gradient and Hessian generator function tests
 include("test_autodiff.jl")
+
+# test retraction validity (for equality constraints)
+include("test_retractions.jl")
+
+# test linesearches
+include("test_linesearch.jl")
+
+# test structs and associated functions to handle inequality constraints
+include("test_inequalities.jl")
