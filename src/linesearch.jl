@@ -264,7 +264,7 @@ function exact_linesearch!(xnew, x, n, d, f, fval, retract_method, cval, c!, par
 
 	# do golden ratio bisection
 	nd = norm(d)
-	while (α_c - α_b) > 1e-6/nd
+	while (α_c - α_b) > 1e-6*nd
 		exact_iter_count += 1
 
 		if f_b < f_c || isinf(f_c)	# shrink interval to the left

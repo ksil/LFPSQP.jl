@@ -76,7 +76,7 @@ while i < min(maxit, n+m)
     
     if dAd <= 0
         # resvec = resvec(1:i);
-        x .= d
+        x .= d / norm(d)
         λ .= NaN
         return i, Inf
     end

@@ -373,7 +373,7 @@ function optimize(f, grad!, c!, jac!, hess_lag_vec!, x0::Vector{Float64}, xl, xu
 			
 			# calculate tolerance for truncated newton step
 			grad_norm = norm(d)
-			tol = param.tn_κ*min(1, (grad_norm/prev_grad_norm)^2)*grad_norm
+			tol = param.tn_κ*min(1, (grad_norm/prev_grad_norm))*grad_norm
 			
 			prev_grad_norm = grad_norm  	# update prev_grad_norm for next time
 
