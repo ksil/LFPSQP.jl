@@ -9,7 +9,7 @@ Performs feasible nonlinear constrained optimization (i.e., every iterate satisf
 where _f_ is the objective function, **c** are equality constraints, **d** are inequality constraints with lower and upper bounds of **d**<sup>l</sup> and **d**<sup>u</sup>, and **x**<sup>l</sup> and **x**<sup>u</sup> are box constraints.
 
 Please cite as:  
-_Manuscript forthcoming_
+K.S. Silmore and J.W. Swan, Locally Feasibly Projected Sequential Quadratic Programming for Nonlinear Programming on Arbitrary Smooth Constraint Manifolds, [ArXiv:2111.03236 \[math.OC\]](https://arxiv.org/abs/2111.03236) (2021).
 
 # Examples
 ## Unconstrained
